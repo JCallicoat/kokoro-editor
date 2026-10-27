@@ -205,6 +205,9 @@ class MainWindow(QMainWindow):
         return os.path.dirname(self._path) if self._path else os.getcwd()
 
     def _set_document(self, text: str, path: str | None) -> None:
+        # Opening, closing or starting a new document ends playback of the old one.
+        if self._player is not None:
+            self._end_session("Stopped")
         self.text_edit.setPlainText(text)  # also clears the undo history
         self.text_edit.document().setModified(False)
         self._path = path
