@@ -29,6 +29,11 @@ evenly (`af_bella+am_puck`), otherwise the weights are sent with the names
 
 **Play** reads the selected text, or the whole document if nothing is selected.
 
+**Render…** saves the same text to an audio file instead. Choose the file name
+and one of the server's output formats (MP3, Opus, AAC, FLAC, WAV or raw PCM);
+the extension follows the chosen format. The audio is generated in a single
+non-streamed request, so long documents can take a while.
+
 ### Inline voice tags and control tokens
 
 Every request is sent with `allow_voice_tags: true`, so you can switch voices

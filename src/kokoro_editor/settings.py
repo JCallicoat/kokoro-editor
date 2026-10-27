@@ -6,6 +6,7 @@ import json
 from dataclasses import dataclass, field
 
 from PySide6.QtCore import QSettings, QUrl
+from PySide6.QtNetwork import QNetworkRequest
 
 VOICE_SLOTS = 3
 MAX_VOICE_WEIGHT = 10
@@ -77,6 +78,37 @@ class AppSettings:
         s.setValue("scrub_step_s", self.scrub_step_s)
         s.setValue("ssml", self.ssml)
         s.sync()
+
+
+def speech_payload(
+    settings: AppSettings, text: str, response_format: str, stream: bool
+) -> dict:
+    """JSON body for /v1/audio/speech, shared by playback and rendering."""
+    payload = {
+        "model": settings.model,
+        "input": text,
+        "voice": settings.voice_string,
+        "response_format": response_format,
+        "speed": settings.speed,
+        "volume_multiplier": settings.volume_multiplier,
+        "stream": stream,
+        "allow_voice_tags": True,  # inline [voice:...] and [pause:...] tokens
+    }
+    if settings.ssml:
+        payload["ssml"] = True
+    return payload
+
+
+def speech_request(base_url: str, timeout_ms: int) -> QNetworkRequest:
+    request = QNetworkRequest(api_url(base_url, "/v1/audio/speech"))
+    request.setHeader(
+        QNetworkRequest.KnownHeaders.ContentTypeHeader, "application/json"
+    )
+    try:
+        request.setTransferTimeout(timeout_ms)
+    except Exception:
+        pass
+    return request
 
 
 def api_url(base_url: str, path: str) -> QUrl:

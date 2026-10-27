@@ -30,11 +30,13 @@ from PySide6.QtWidgets import (
 
 from kokoro_editor import audio
 from kokoro_editor.audio import PCMPlayer
+from kokoro_editor.render_dialog import RenderDialog
 from kokoro_editor.settings import (
     AppSettings,
-    api_url,
     describe_http_error,
     fmt_time,
+    speech_payload,
+    speech_request,
 )
 from kokoro_editor.settings_dialog import SettingsDialog
 from kokoro_editor.widgets import SeekSlider
@@ -87,6 +89,14 @@ class MainWindow(QMainWindow):
             style.standardIcon(QStyle.StandardPixmap.SP_MediaStop)
         )
         self.stop_btn.clicked.connect(self._on_stop_clicked)
+        self.render_btn = QPushButton("Render…")
+        self.render_btn.setIcon(
+            style.standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton)
+        )
+        self.render_btn.setToolTip(
+            "Render the selection (or the whole document) to an audio file"
+        )
+        self.render_btn.clicked.connect(self._on_render_clicked)
         self.ssml_check = QCheckBox("SSML")
         self.ssml_check.setToolTip("Send the text to the server as SSML")
         self.ssml_check.setChecked(self.settings.ssml)
@@ -112,6 +122,7 @@ class MainWindow(QMainWindow):
         controls = QHBoxLayout()
         controls.addWidget(self.play_btn)
         controls.addWidget(self.stop_btn)
+        controls.addWidget(self.render_btn)
         controls.addWidget(self.ssml_check)
         controls.addStretch(1)
         controls.addWidget(self.summary_label)
@@ -344,8 +355,38 @@ class MainWindow(QMainWindow):
         cursor = self.text_edit.textCursor()
         if cursor.hasSelection():
             # selectedText() separates paragraphs with U+2029.
-            return cursor.selectedText().replace(" ", "\n").strip()
+            return cursor.selectedText().replace("\u2029", "\n").strip()
         return self.text_edit.toPlainText().strip()
+
+    def _ready_to_speak(self, text: str) -> bool:
+        if not text:
+            self.status_label.setText("Nothing to speak.")
+            return False
+        if not self.settings.voice_string:
+            self.status_label.setText("Choose a voice first.")
+            self._open_settings()
+        return bool(self.settings.voice_string)
+
+    def _on_render_clicked(self) -> None:
+        text = self._text_to_speak()
+        if not self._ready_to_speak(text):
+            return
+        if self._path:
+            directory = os.path.dirname(self._path)
+            stem = os.path.splitext(os.path.basename(self._path))[0]
+        else:
+            directory, stem = os.getcwd(), UNTITLED
+        selection = self.text_edit.textCursor().hasSelection()
+        dialog = RenderDialog(
+            self.settings,
+            text,
+            os.path.join(directory, stem),
+            selection,
+            self._nam,
+            self,
+        )
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.status_label.setText(f"Rendered {dialog.saved_path}")
 
     # -- session control ---------------------------------------------------- #
     def _on_play_clicked(self) -> None:
@@ -370,14 +411,8 @@ class MainWindow(QMainWindow):
             )
             return
         text = self._text_to_speak()
-        if not text:
-            self.status_label.setText("Nothing to speak.")
+        if not self._ready_to_speak(text):
             return
-        if not self.settings.voice_string:
-            self.status_label.setText("Choose a voice first.")
-            self._open_settings()
-            if not self.settings.voice_string:
-                return
 
         s = self.settings
         player = PCMPlayer(s.sample_rate, s.prebuffer_ms)
@@ -387,26 +422,8 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Could not open audio device", str(exc))
             return
 
-        payload = {
-            "model": s.model,
-            "input": text,
-            "voice": s.voice_string,
-            "response_format": "pcm",
-            "speed": s.speed,
-            "volume_multiplier": s.volume_multiplier,
-            "stream": True,
-            "allow_voice_tags": True,  # inline [voice:...] and [pause:...] tokens
-        }
-        if s.ssml:
-            payload["ssml"] = True
-        request = QNetworkRequest(api_url(s.base_url, "/v1/audio/speech"))
-        request.setHeader(
-            QNetworkRequest.KnownHeaders.ContentTypeHeader, "application/json"
-        )
-        try:
-            request.setTransferTimeout(REQUEST_INACTIVITY_TIMEOUT_MS)
-        except Exception:
-            pass
+        payload = speech_payload(s, text, "pcm", stream=True)
+        request = speech_request(s.base_url, REQUEST_INACTIVITY_TIMEOUT_MS)
         reply = self._nam.post(
             request, QByteArray(json.dumps(payload).encode("utf-8"))
         )
