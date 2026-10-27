@@ -33,8 +33,16 @@ from kokoro_editor.audio import PCMPlayer
 from kokoro_editor.render_dialog import RenderDialog
 from kokoro_editor.settings import (
     AppSettings,
+    add_recent_file,
     describe_http_error,
     fmt_time,
+    load_last_dir,
+    load_recent_files,
+    load_window_geometry,
+    remove_recent_file,
+    save_last_dir,
+    save_recent_files,
+    save_window_geometry,
     speech_payload,
     speech_request,
 )
@@ -52,7 +60,9 @@ REQUEST_INACTIVITY_TIMEOUT_MS = (
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.resize(720, 480)
+        geometry = load_window_geometry()
+        if geometry is None or not self.restoreGeometry(geometry):
+            self.resize(720, 480)
 
         self.settings = AppSettings.load()
         self._path: str | None = None
@@ -157,6 +167,10 @@ class MainWindow(QMainWindow):
         file_menu = bar.addMenu("&File")
         file_menu.addAction(self._action("&New", self.new_document, Key.New))
         file_menu.addAction(self._action("&Open…", self.open_document, Key.Open))
+        self.recent_menu = file_menu.addMenu("Open &Recent")
+        # Rebuilt on every show so lists saved by other running instances appear too.
+        self.recent_menu.aboutToShow.connect(self._update_recent_menu)
+        self._update_recent_menu()
         file_menu.addAction(self._action("&Save", self.save, Key.Save))
         file_menu.addAction(
             self._action("Save &As…", self.save_as, "Ctrl+Shift+S")
@@ -213,7 +227,46 @@ class MainWindow(QMainWindow):
         self.setWindowModified(self.text_edit.document().isModified())
 
     def _dialog_dir(self) -> str:
-        return os.path.dirname(self._path) if self._path else os.getcwd()
+        if self._path:
+            return os.path.dirname(self._path)
+        last_dir = load_last_dir()
+        return last_dir if os.path.isdir(last_dir) else os.getcwd()
+
+    def _remember_file(self, path: str) -> None:
+        add_recent_file(path)
+        save_last_dir(os.path.dirname(path))
+
+    def _update_recent_menu(self) -> None:
+        menu = self.recent_menu
+        menu.clear()
+        files = load_recent_files()
+        home = os.path.expanduser("~")
+        for number, path in enumerate(files, start=1):
+            shown = "~" + path[len(home) :] if path.startswith(home + os.sep) else path
+            # Escape & so Qt doesn't treat it as a mnemonic marker.
+            action = menu.addAction(f"&{number}  {shown.replace('&', '&&')}")
+            action.triggered.connect(lambda _=False, p=path: self._open_recent(p))
+        if not files:
+            menu.addAction("No recent files").setEnabled(False)
+        menu.addSeparator()
+        clear = menu.addAction("&Clear List")
+        clear.setEnabled(bool(files))
+        clear.triggered.connect(self._clear_recent)
+
+    def _open_recent(self, path: str) -> None:
+        if not os.path.isfile(path):
+            remove_recent_file(path)
+            QMessageBox.warning(
+                self,
+                "File not found",
+                f"{path}\n\nno longer exists and was removed from the recent files list.",
+            )
+            return
+        if self.maybe_save():
+            self.open_path(path)
+
+    def _clear_recent(self) -> None:
+        save_recent_files([])
 
     def _set_document(self, text: str, path: str | None) -> None:
         # Opening, closing or starting a new document ends playback of the old one.
@@ -271,6 +324,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Could not open file", f"{path}\n\n{exc}")
             return
         self._set_document(text, path)
+        self._remember_file(path)
         self.status_label.setText(f"Opened {path}")
 
     def save(self) -> bool:
@@ -292,9 +346,10 @@ class MainWindow(QMainWindow):
         except OSError as exc:
             QMessageBox.critical(self, "Could not save file", f"{path}\n\n{exc}")
             return False
-        self._path = path
+        self._path = os.path.abspath(path)
         self.text_edit.document().setModified(False)
         self._update_title()
+        self._remember_file(self._path)
         self.status_label.setText(f"Saved {path}")
         return True
 
@@ -371,11 +426,10 @@ class MainWindow(QMainWindow):
         text = self._text_to_speak()
         if not self._ready_to_speak(text):
             return
+        stem = UNTITLED
         if self._path:
-            directory = os.path.dirname(self._path)
             stem = os.path.splitext(os.path.basename(self._path))[0]
-        else:
-            directory, stem = os.getcwd(), UNTITLED
+        directory = self._dialog_dir()
         selection = self.text_edit.textCursor().hasSelection()
         dialog = RenderDialog(
             self.settings,
@@ -543,6 +597,7 @@ class MainWindow(QMainWindow):
         if not self.maybe_save():
             event.ignore()
             return
+        save_window_geometry(self.saveGeometry())
         if self._player is not None:
             self._end_session("")
         super().closeEvent(event)

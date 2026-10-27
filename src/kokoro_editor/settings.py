@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 
-from PySide6.QtCore import QSettings, QUrl
+from PySide6.QtCore import QByteArray, QSettings, QUrl
 from PySide6.QtNetwork import QNetworkRequest
 
 VOICE_SLOTS = 3
@@ -78,6 +79,55 @@ class AppSettings:
         s.setValue("scrub_step_s", self.scrub_step_s)
         s.setValue("ssml", self.ssml)
         s.sync()
+
+
+# -- window/session state (not edited in the Settings dialog) --------------- #
+MAX_RECENT_FILES = 5
+
+
+def load_recent_files() -> list[str]:
+    files = QSettings().value("recent_files", [], type=list)
+    return [str(f) for f in files or [] if f]
+
+
+def save_recent_files(files: list[str]) -> None:
+    s = QSettings()
+    s.setValue("recent_files", files)
+    s.sync()
+
+
+def add_recent_file(path: str) -> list[str]:
+    """Move path to the top of the recent files list and return the new list."""
+    path = os.path.abspath(path)
+    files = [f for f in load_recent_files() if f != path]
+    files = [path, *files][:MAX_RECENT_FILES]
+    save_recent_files(files)
+    return files
+
+
+def remove_recent_file(path: str) -> list[str]:
+    files = [f for f in load_recent_files() if f != path]
+    save_recent_files(files)
+    return files
+
+
+def load_last_dir() -> str:
+    return QSettings().value("last_dir", "", type=str)
+
+
+def save_last_dir(directory: str) -> None:
+    QSettings().setValue("last_dir", directory)
+
+
+def load_window_geometry() -> QByteArray | None:
+    geometry = QSettings().value("window_geometry")
+    return geometry if isinstance(geometry, QByteArray) else None
+
+
+def save_window_geometry(geometry: QByteArray) -> None:
+    s = QSettings()
+    s.setValue("window_geometry", geometry)
+    s.sync()
 
 
 def speech_payload(

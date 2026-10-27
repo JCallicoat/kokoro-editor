@@ -34,6 +34,10 @@ and one of the server's output formats (MP3, Opus, AAC, FLAC, WAV or raw PCM);
 the extension follows the chosen format. The audio is generated in a single
 non-streamed request, so long documents can take a while.
 
+The window size, the last folder you opened or saved a file in, and your five
+most recent files are remembered between sessions. Reopen recent files from
+**File → Open Recent**.
+
 ### Inline voice tags and control tokens
 
 Every request is sent with `allow_voice_tags: true`, so you can switch voices
