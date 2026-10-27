@@ -147,7 +147,7 @@ class MainWindow(QMainWindow):
 
         self._create_menus()
         self._update_title()
-        self._update_summary()
+        self._apply_settings()
         self._refresh_ui()
         self.text_edit.setFocus()
 
@@ -354,6 +354,11 @@ class MainWindow(QMainWindow):
         return True
 
     # -- UI helpers --------------------------------------------------------- #
+    def _apply_settings(self) -> None:
+        """Push the current settings into the UI (at startup and after Settings)."""
+        self.text_edit.setFont(self.settings.editor_font())
+        self._update_summary()
+
     def _update_summary(self) -> None:
         s = self.settings
         self.summary_label.setText(
@@ -403,7 +408,7 @@ class MainWindow(QMainWindow):
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.settings = dialog.result_settings()
             self.settings.save()
-            self._update_summary()
+            self._apply_settings()
 
     def _text_to_speak(self) -> str:
         """The selection if there is one, otherwise the whole document."""

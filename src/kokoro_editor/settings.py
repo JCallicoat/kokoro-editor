@@ -7,10 +7,13 @@ import os
 from dataclasses import dataclass, field
 
 from PySide6.QtCore import QByteArray, QSettings, QUrl
+from PySide6.QtGui import QFont, QGuiApplication
 from PySide6.QtNetwork import QNetworkRequest
 
 VOICE_SLOTS = 3
 MAX_VOICE_WEIGHT = 10
+MIN_FONT_SIZE = 6
+MAX_FONT_SIZE = 72
 
 
 def build_voice_string(voices: list[str], weights: list[int]) -> str:
@@ -27,6 +30,10 @@ def build_voice_string(voices: list[str], weights: list[int]) -> str:
 
 @dataclass
 class AppSettings:
+    # Editor
+    font_family: str = ""  # "" / 0 = the system default font
+    font_size: int = 0
+    # Kokoro
     base_url: str = "http://localhost:8880"
     model: str = "kokoro"
     voices: list[str] = field(default_factory=lambda: [""] * VOICE_SLOTS)
@@ -42,12 +49,22 @@ class AppSettings:
     def voice_string(self) -> str:
         return build_voice_string(self.voices, self.weights)
 
+    def editor_font(self) -> QFont:
+        font = QFont(QGuiApplication.font())
+        if self.font_family:
+            font.setFamily(self.font_family)
+        if self.font_size > 0:
+            font.setPointSize(self.font_size)
+        return font
+
     @classmethod
     def load(cls) -> "AppSettings":
         s = QSettings()
         d = cls()
         slots = range(1, VOICE_SLOTS + 1)
         return cls(
+            font_family=s.value("font_family", d.font_family, type=str),
+            font_size=s.value("font_size", d.font_size, type=int),
             base_url=s.value("base_url", d.base_url, type=str),
             model=s.value("model", d.model, type=str),
             voices=[s.value(f"voice{i}", "", type=str) for i in slots],
@@ -67,6 +84,8 @@ class AppSettings:
 
     def save(self) -> None:
         s = QSettings()
+        s.setValue("font_family", self.font_family)
+        s.setValue("font_size", self.font_size)
         s.setValue("base_url", self.base_url)
         s.setValue("model", self.model)
         for i, (v, w) in enumerate(zip(self.voices, self.weights), start=1):
