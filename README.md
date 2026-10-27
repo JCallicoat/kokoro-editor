@@ -41,6 +41,12 @@ The narrator opens. [voice:af_bella] Did it land? [pause:0.3s] [voice:am_michael
 This requires a server with voice tags enabled (the default). If the server
 has `ENABLE_VOICE_TAGS=false`, the tags are read out as plain text instead.
 
+### SSML
+
+Check **SSML** next to the Stop button to send requests with `ssml: true`, so
+the server interprets the text as SSML. The setting is remembered between
+sessions.
+
 ### Keyboard shortcuts
 
 | Action             | Shortcut          |

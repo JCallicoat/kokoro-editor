@@ -34,6 +34,7 @@ class AppSettings:
     sample_rate: int = 24000
     prebuffer_ms: int = 400
     scrub_step_s: int = 5
+    ssml: bool = False
 
     @property
     def voice_string(self) -> str:
@@ -59,6 +60,7 @@ class AppSettings:
             sample_rate=s.value("sample_rate", d.sample_rate, type=int),
             prebuffer_ms=s.value("prebuffer_ms", d.prebuffer_ms, type=int),
             scrub_step_s=s.value("scrub_step_s", d.scrub_step_s, type=int),
+            ssml=s.value("ssml", d.ssml, type=bool),
         )
 
     def save(self) -> None:
@@ -73,6 +75,7 @@ class AppSettings:
         s.setValue("sample_rate", self.sample_rate)
         s.setValue("prebuffer_ms", self.prebuffer_ms)
         s.setValue("scrub_step_s", self.scrub_step_s)
+        s.setValue("ssml", self.ssml)
         s.sync()
 
 

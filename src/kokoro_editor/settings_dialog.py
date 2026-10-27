@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 from PySide6.QtNetwork import (
     QNetworkAccessManager,
@@ -43,6 +44,7 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Settings")
         self.setMinimumWidth(480)
+        self._settings = settings
         self._nam = QNetworkAccessManager(self)
         self._reply: QNetworkReply | None = None
 
@@ -241,7 +243,9 @@ class SettingsDialog(QDialog):
         super().done(result)
 
     def result_settings(self) -> AppSettings:
-        return AppSettings(
+        # replace() keeps settings this dialog doesn't edit (e.g. ssml).
+        return replace(
+            self._settings,
             base_url=self.url_edit.text().strip(),
             model=self.model_edit.text().strip() or "kokoro",
             voices=self._current_selection(),

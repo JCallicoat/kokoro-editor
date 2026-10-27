@@ -13,6 +13,7 @@ from PySide6.QtNetwork import (
     QNetworkRequest,
 )
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QFileDialog,
     QHBoxLayout,
@@ -86,6 +87,10 @@ class MainWindow(QMainWindow):
             style.standardIcon(QStyle.StandardPixmap.SP_MediaStop)
         )
         self.stop_btn.clicked.connect(self._on_stop_clicked)
+        self.ssml_check = QCheckBox("SSML")
+        self.ssml_check.setToolTip("Send the text to the server as SSML")
+        self.ssml_check.setChecked(self.settings.ssml)
+        self.ssml_check.toggled.connect(self._on_ssml_toggled)
 
         self.seek_slider = SeekSlider(Qt.Orientation.Horizontal)
         self.seek_slider.setToolTip(
@@ -107,6 +112,7 @@ class MainWindow(QMainWindow):
         controls = QHBoxLayout()
         controls.addWidget(self.play_btn)
         controls.addWidget(self.stop_btn)
+        controls.addWidget(self.ssml_check)
         controls.addStretch(1)
         controls.addWidget(self.summary_label)
 
@@ -319,6 +325,10 @@ class MainWindow(QMainWindow):
             self._player.seek(self.seek_slider.sliderPosition() / 1000)
             self._tick()
 
+    def _on_ssml_toggled(self, checked: bool) -> None:
+        self.settings.ssml = checked
+        self.settings.save()
+
     def _open_settings(self) -> None:
         dialog = SettingsDialog(self.settings, self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
@@ -384,6 +394,8 @@ class MainWindow(QMainWindow):
             "stream": True,
             "allow_voice_tags": True,  # inline [voice:...] and [pause:...] tokens
         }
+        if s.ssml:
+            payload["ssml"] = True
         request = QNetworkRequest(api_url(s.base_url, "/v1/audio/speech"))
         request.setHeader(
             QNetworkRequest.KnownHeaders.ContentTypeHeader, "application/json"
