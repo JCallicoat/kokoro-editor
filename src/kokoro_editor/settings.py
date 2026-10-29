@@ -158,13 +158,17 @@ def save_window_geometry(geometry: QByteArray) -> None:
 
 
 def speech_payload(
-    settings: AppSettings, text: str, response_format: str, stream: bool
+    settings: AppSettings,
+    text: str,
+    response_format: str,
+    stream: bool,
+    voice: str | None = None,
 ) -> dict:
     """JSON body for /v1/audio/speech, shared by playback and rendering."""
     payload = {
         "model": settings.model,
         "input": text,
-        "voice": settings.voice_string,
+        "voice": voice if voice is not None else settings.voice_string,
         "response_format": response_format,
         "speed": settings.speed,
         "volume_multiplier": settings.volume_multiplier,

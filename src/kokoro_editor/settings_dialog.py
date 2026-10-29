@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 
+from PySide6.QtCore import QByteArray, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtNetwork import (
     QNetworkAccessManager,
@@ -25,7 +26,9 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QSpinBox,
+    QStyle,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -53,6 +56,9 @@ class SettingsDialog(QDialog):
         self._settings = settings
         self._nam = QNetworkAccessManager(self)
         self._reply: QNetworkReply | None = None
+        self._active_play_btn: QPushButton | None = None
+        self._last_active_btn: QPushButton | None = None
+        self._example_player: "PCMPlayer | None" = None
 
         # One tab per area; add new tabs by writing another _build_*_tab().
         self.tabs = QTabWidget()
@@ -135,6 +141,7 @@ class SettingsDialog(QDialog):
             box.currentIndexChanged.connect(self._update_voice_string)
         self.voice_string_edit = QLineEdit()
         self.voice_string_edit.setReadOnly(True)
+        self._voice_play_btns: list[QPushButton] = []
         self.refresh_btn = QPushButton("Reload voices")
         self.refresh_btn.clicked.connect(self._fetch_voices)
         self.voice_status = QLabel("")
@@ -150,9 +157,29 @@ class SettingsDialog(QDialog):
             row = QHBoxLayout()
             row.addWidget(voice_box, 1)
             row.addWidget(weight_box)
+            play_btn = QPushButton()
+            play_btn.setFlat(True)
+            play_btn.setFixedWidth(24)
+            play_btn.setIcon(
+                self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay)
+            )
+            play_btn.clicked.connect(
+                lambda _=False, i=index: self._play_example_voice(i)
+            )
+            row.addWidget(play_btn)
+            self._voice_play_btns.append(play_btn)
             label = "required" if index == 0 else "optional"
             voice_form.addRow(f"Voice {index + 1} ({label})", row)
-        voice_form.addRow("Resulting voice", self.voice_string_edit)
+        self._voice_mix_play_btn = QPushButton()
+        self._voice_mix_play_btn.setFlat(True)
+        self._voice_mix_play_btn.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay)
+        )
+        self._voice_mix_play_btn.clicked.connect(self._play_mixed_voice)
+        row2 = QHBoxLayout()
+        row2.addWidget(self.voice_string_edit, 1)
+        row2.addWidget(self._voice_mix_play_btn)
+        voice_form.addRow("Resulting voice", row2)
         voice_form.addRow(status_row)
 
         # Speech parameters
@@ -288,6 +315,189 @@ class SettingsDialog(QDialog):
             self.voice_status.setText(f"{len(voices)} voices loaded.")
         finally:
             reply.deleteLater()
+
+    # -- example voice playback --------------------------------------------- #
+    def _play_example_voice(self, index: int) -> None:
+        voice_name = self.voice_boxes[index].currentData()
+        if not voice_name:
+            return
+        self._play_example(
+            f"Hello! I am {voice_name} voice provided by the kokoro API. This is how I sound.",
+            voice_name,
+            self._voice_play_btns[index],
+        )
+
+    def _play_mixed_voice(self) -> None:
+        voice_str = self.voice_string_edit.text()
+        if not voice_str:
+            return
+        self._play_example(
+            "Hello! I am the mixed voice provided by the kokoro API. This is how I sound.",
+            voice_str,
+            self._voice_mix_play_btn,
+        )
+
+    def _play_example(
+        self, text: str, voice: str, btn: QPushButton | None = None
+    ) -> None:
+        # Pause main window player if playing
+        parent = self.parent()
+        if (
+            parent
+            and hasattr(parent, "_player")
+            and parent._player is not None
+        ):
+            parent._player.set_paused(True)
+
+        # If something is already playing (network request active OR audio
+        # still playing from a completed request)
+        is_playing = (
+            self._is_example_playing() or self._active_play_btn is not None
+        )
+        if is_playing:
+            old_btn = self._active_play_btn
+            self._reply = None
+            # Cancel the polling timer
+            if hasattr(self, "_check_timer") and self._check_timer is not None:
+                self._check_timer.stop()
+            # Reset old button icon to play
+            if old_btn is not None:
+                old_btn.setIcon(
+                    self.style().standardIcon(
+                        QStyle.StandardPixmap.SP_MediaPlay
+                    )
+                )
+            # If clicking the same button (or the last-active button after
+            # audio finished), just stop (resume main player)
+            if btn is old_btn or btn is self._last_active_btn:
+                self._active_play_btn = None
+                self._last_active_btn = None
+                # Actually stop playback by closing and resetting the stream
+                if self._example_player is not None:
+                    self._example_player.close(drain=False)
+                    self._example_player = None
+                # Reset button icon to play
+                btn.setIcon(
+                    self.style().standardIcon(
+                        QStyle.StandardPixmap.SP_MediaPlay
+                    )
+                )
+                if (
+                    parent
+                    and hasattr(parent, "_player")
+                    and parent._player is not None
+                ):
+                    parent._player.set_paused(False)
+                return
+            # Otherwise switch to new voice
+            self._active_play_btn = btn
+
+        self._active_play_btn = btn
+        self._last_active_btn = btn
+        self._set_example_playing(True)
+
+        from kokoro_editor.settings import speech_payload, speech_request
+
+        s = self._settings
+        if self._example_player is None:
+            from kokoro_editor.audio import PCMPlayer
+
+            self._example_player = PCMPlayer(s.sample_rate, s.prebuffer_ms)
+            try:
+                self._example_player.open()
+            except Exception:
+                self._set_example_playing(False)
+                self._active_play_btn = None
+                if (
+                    parent
+                    and hasattr(parent, "_player")
+                    and parent._player is not None
+                ):
+                    parent._player.set_paused(False)
+                return
+
+        # Reset buffer for new playback
+        self._example_player.reset()
+
+        payload = speech_payload(s, text, "pcm", stream=True, voice=voice)
+        request = speech_request(s.base_url, 120_000)
+        reply = self._nam.post(
+            request, QByteArray(json.dumps(payload).encode("utf-8"))
+        )
+
+        player = self._example_player
+
+        def _on_ready() -> None:
+            if reply is not self._reply:
+                return
+            data = bytes(reply.readAll().data())
+            if not data:
+                return
+            status = reply.attribute(
+                QNetworkRequest.Attribute.HttpStatusCodeAttribute
+            )
+            if status is not None and status >= 400:
+                return
+            player.feed(data)
+
+        def _on_finished() -> None:
+            if reply is not self._reply:
+                return
+            self._reply = None
+            status = reply.attribute(
+                QNetworkRequest.Attribute.HttpStatusCodeAttribute
+            )
+            if status is not None and status >= 400:
+                return
+            leftover = bytes(reply.readAll().data())
+            if leftover:
+                player.feed(leftover)
+            player.mark_complete()
+
+        reply.readyRead.connect(_on_ready)
+        reply.finished.connect(_on_finished)
+        self._reply = reply
+
+        # Poll player state to reset icon when playback actually finishes
+        self._check_timer = QTimer(self)
+        self._check_timer.setSingleShot(True)
+        self._check_timer.setInterval(200)
+        self._check_timer.timeout.connect(
+            lambda: self._check_playback_finished(player)
+        )
+        self._check_timer.start()
+
+    def _check_playback_finished(self, player: PCMPlayer) -> None:
+        """Check if player has finished and reset the button icon."""
+        state = player.snapshot()
+        if state.finished or (
+            state.complete and not state.primed and state.total_s == 0
+        ):
+            self._set_example_playing(False)
+            self._active_play_btn = None
+            # Don't clear _last_active_btn so stop-click detection works
+        # Continue polling if audio hasn't finished
+        if not state.finished:
+            self._check_timer = QTimer(self)
+            self._check_timer.setSingleShot(True)
+            self._check_timer.setInterval(200)
+            self._check_timer.timeout.connect(
+                lambda: self._check_playback_finished(player)
+            )
+            self._check_timer.start()
+
+    def _is_example_playing(self) -> bool:
+        return self._reply is not None or self._active_play_btn is not None
+
+    def _set_example_playing(self, playing: bool) -> None:
+        if self._active_play_btn is None:
+            return
+        icon = (
+            QStyle.StandardPixmap.SP_MediaStop
+            if playing
+            else QStyle.StandardPixmap.SP_MediaPlay
+        )
+        self._active_play_btn.setIcon(self.style().standardIcon(icon))
 
     # -- dialog plumbing ---------------------------------------------------- #
     def accept(self) -> None:

@@ -93,6 +93,16 @@ class PCMPlayer:
         with self._lock:
             self._complete = True
 
+    def reset(self) -> None:
+        """Clear buffer and reset playback state for a new playback."""
+        with self._lock:
+            self._buf = bytearray()
+            self._carry = b""
+            self._pos = 0
+            self._primed = False
+            self._complete = False
+            self._finished = False
+
     # -- control / inspection ---------------------------------------------- #
     @property
     def paused(self) -> bool:
