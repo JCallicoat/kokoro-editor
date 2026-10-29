@@ -37,8 +37,8 @@ from kokoro_editor.settings import (
 # Output formats supported by Kokoro-FastAPI: (response_format, label).
 # Each format's file extension is the same as its name.
 FORMATS = [
-    ("mp3", "MP3"),
     ("opus", "Opus"),
+    ("mp3", "MP3"),
     ("aac", "AAC"),
     ("flac", "FLAC"),
     ("wav", "WAV"),
