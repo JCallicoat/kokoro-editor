@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QApplication
 
 from kokoro_editor import __version__
 from kokoro_editor.main_window import MainWindow
+from kokoro_editor.settings import load_recent_files
 
 
 def main() -> int:
@@ -23,4 +24,11 @@ def main() -> int:
     args = app.arguments()[1:]
     if args:
         window.open_path(args[0])
+    elif window.settings.restore_session:
+        files = load_recent_files()
+        if files:
+            try:
+                window.open_path(files[0])
+            except Exception:
+                window.status_label.setText("New Session")
     return app.exec()

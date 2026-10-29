@@ -12,6 +12,7 @@ from PySide6.QtNetwork import (
     QNetworkRequest,
 )
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -98,9 +99,18 @@ class SettingsDialog(QDialog):
         font_form.addRow("Size", self.font_size_spin)
         font_form.addRow(self.font_preview)
 
+        # Restore session checkbox
+        self.restore_check = QCheckBox("Restore previous session on startup")
+        self.restore_check.setChecked(settings.restore_session)
+
+        editor_group = QGroupBox("Editor")
+        editor_layout = QVBoxLayout(editor_group)
+        editor_layout.addWidget(self.restore_check)
+
         tab = QWidget()
         layout = QVBoxLayout(tab)
         layout.addWidget(font_group)
+        layout.addWidget(editor_group)
         layout.addStretch(1)
         return tab
 
@@ -309,4 +319,5 @@ class SettingsDialog(QDialog):
             sample_rate=self.rate_spin.value(),
             prebuffer_ms=self.prebuffer_spin.value(),
             scrub_step_s=self.scrub_spin.value(),
+            restore_session=self.restore_check.isChecked(),
         )

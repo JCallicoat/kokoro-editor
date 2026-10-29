@@ -44,6 +44,7 @@ class AppSettings:
     prebuffer_ms: int = 400
     scrub_step_s: int = 5
     ssml: bool = False
+    restore_session: bool = True
 
     @property
     def voice_string(self) -> str:
@@ -80,6 +81,7 @@ class AppSettings:
             prebuffer_ms=s.value("prebuffer_ms", d.prebuffer_ms, type=int),
             scrub_step_s=s.value("scrub_step_s", d.scrub_step_s, type=int),
             ssml=s.value("ssml", d.ssml, type=bool),
+            restore_session=s.value("restore_session", d.restore_session, type=bool),
         )
 
     def save(self) -> None:
@@ -97,6 +99,7 @@ class AppSettings:
         s.setValue("prebuffer_ms", self.prebuffer_ms)
         s.setValue("scrub_step_s", self.scrub_step_s)
         s.setValue("ssml", self.ssml)
+        s.setValue("restore_session", self.restore_session)
         s.sync()
 
 
