@@ -98,7 +98,9 @@ class RenderDialog(QDialog):
         form.addRow("Text", QLabel(f"{source} ({len(text):,} characters)"))
 
         self.progress = QProgressBar()
-        self.progress.setRange(0, 0)  # indeterminate: the server gives no progress
+        self.progress.setRange(
+            0, 0
+        )  # indeterminate: the server gives no progress
         self.progress.setTextVisible(False)
         self.progress.hide()
         self.status_label = QLabel("")
@@ -157,13 +159,17 @@ class RenderDialog(QDialog):
 
     # -- rendering ---------------------------------------------------------- #
     def _render(self) -> None:
-        path = os.path.abspath(os.path.expanduser(self.path_edit.text().strip()))
+        path = os.path.abspath(
+            os.path.expanduser(self.path_edit.text().strip())
+        )
         if not self.path_edit.text().strip():
             QMessageBox.warning(self, "File required", "Enter a file name.")
             return
         if not os.path.isdir(os.path.dirname(path)):
             QMessageBox.warning(
-                self, "Folder not found", f"{os.path.dirname(path)} does not exist."
+                self,
+                "Folder not found",
+                f"{os.path.dirname(path)} does not exist.",
             )
             return
         if os.path.exists(path):
@@ -197,7 +203,7 @@ class RenderDialog(QDialog):
         )
         error = reply.error()
         error_text = reply.errorString()
-        data = reply.readAll().data()
+        data = bytes(reply.readAll().data())
         reply.deleteLater()
 
         if status is not None and status >= 400:

@@ -86,7 +86,9 @@ class SettingsDialog(QDialog):
         self.font_size_spin.setRange(MIN_FONT_SIZE, MAX_FONT_SIZE)
         self.font_size_spin.setSuffix(" pt")
         self.font_size_spin.setValue(font.pointSize())
-        self.font_preview = QLabel("The quick brown fox jumps over the lazy dog.")
+        self.font_preview = QLabel(
+            "The quick brown fox jumps over the lazy dog."
+        )
         self.font_preview.setWordWrap(True)
         self.font_preview.setMinimumHeight(48)
         self.font_box.currentFontChanged.connect(self._update_font_preview)

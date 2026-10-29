@@ -5,25 +5,45 @@ from __future__ import annotations
 import json
 import os
 
-from PySide6.QtCore import QByteArray, Qt, QTimer
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtCore import (
+    QByteArray,
+    QModelIndex,
+    QPersistentModelIndex,
+    Qt,
+    QSize,
+    QTimer,
+    QUrl,
+)
+from PySide6.QtGui import QAction, QCursor, QKeySequence, QPainter
 from PySide6.QtNetwork import (
     QNetworkAccessManager,
     QNetworkReply,
     QNetworkRequest,
 )
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QDialog,
+    QDialogButtonBox,
+    QComboBox,
     QFileDialog,
     QHBoxLayout,
+    QFormLayout,
+    QGroupBox,
+    QHeaderView,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QSizePolicy,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QStyle,
+    QTableWidget,
+    QTableWidgetItem,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
@@ -34,6 +54,7 @@ from kokoro_editor.render_dialog import RenderDialog
 from kokoro_editor.settings import (
     AppSettings,
     add_recent_file,
+    build_voice_string,
     describe_http_error,
     fmt_time,
     load_last_dir,
@@ -55,6 +76,378 @@ FILE_FILTER = "Text files (*.txt);;All files (*)"
 REQUEST_INACTIVITY_TIMEOUT_MS = (
     120_000  # Qt 6 defaults to 30 s, too short for slow first chunks
 )
+
+
+class _VoiceItemDelegate(QStyledItemDelegate):
+    """Delegate that wraps text in table cells and expands row height."""
+
+    def paint(
+        self,
+        painter: QPainter,
+        option: QStyleOptionViewItem,
+        index: QModelIndex | QPersistentModelIndex,
+    ) -> None:
+        style = option.widget.style() if option.widget else None
+        option.displayAlignment = (
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
+        # Draw the background
+        if style:
+            style.drawControl(
+                QStyle.ControlElement.CE_ItemViewItem, option, painter
+            )
+        # Draw wrapped text, replacing + with newlines for display
+        text = index.data(Qt.ItemDataRole.DisplayRole) or ""
+        display_text = text.replace("+", "\n")
+        rect = option.rect
+        # Draw text with word wrap, centered vertically
+        flags = (
+            Qt.AlignmentFlag.AlignLeft
+            | Qt.AlignmentFlag.AlignVCenter
+            | Qt.TextFlag.TextWordWrap
+        )
+        painter.drawText(rect, int(flags), display_text)
+
+    def sizeHint(
+        self,
+        option: QStyleOptionViewItem,
+        index: QModelIndex | QPersistentModelIndex,
+    ) -> QSize:
+        text = index.data(Qt.ItemDataRole.DisplayRole) or ""
+        display_text = text.replace("+", "\n")
+        # Calculate wrapped height
+        font_metrics = option.fontMetrics
+        rect = font_metrics.boundingRect(
+            option.rect,
+            int(Qt.AlignmentFlag.AlignLeft | Qt.TextFlag.TextWordWrap),
+            display_text,
+        )
+        height = max(rect.height(), option.rect.height())
+        return QSize(option.rect.width(), height)
+
+    def helpEvent(self, event, _widget, option, index) -> bool:
+        text = index.data(Qt.ItemDataRole.DisplayRole) or ""
+        if text:
+            QToolTip.showText(QCursor.pos(), text, option.widget)
+        return True
+
+
+class PanelWidget(QWidget):
+    """Collapsible side panel with a Characters label and Add/Remove buttons."""
+
+    COLLAPSED_WIDTH = 30
+    EXPANDED_WIDTH = 220
+
+    def __init__(
+        self, settings: AppSettings, parent: QWidget | None = None
+    ) -> None:
+        super().__init__(parent)
+        self.setFixedWidth(self.EXPANDED_WIDTH)
+        self._settings = settings
+
+        self._collapsed = True
+        self._nam = QNetworkAccessManager(self)
+        self._voices: list[str] = []
+        self._reply: QNetworkReply | None = None
+
+        # Main layout
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # Toggle button (top-right, always visible)
+        style = self.style()
+        self.toggle_btn = QPushButton()
+        self.toggle_btn.setFlat(True)
+        self.toggle_btn.setFixedWidth(24)
+        self.toggle_btn.setIcon(
+            style.standardIcon(QStyle.StandardPixmap.SP_ArrowRight)
+        )
+        self.toggle_btn.clicked.connect(self._toggle)
+        layout.addWidget(
+            self.toggle_btn,
+            0,
+            Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight,
+        )
+
+        # Collapsible content
+        self.content = QWidget()
+        content_layout = QVBoxLayout(self.content)
+        content_layout.setContentsMargins(9, 6, 9, 6)
+
+        # Header label
+        self.title_label = QLabel("Characters")
+        self.title_label.setStyleSheet("font-weight: bold;")
+        content_layout.addWidget(self.title_label)
+
+        # Body — table of characters
+        self.table = QTableWidget(0, 2)
+        self.table.setHorizontalHeaderLabels(["Character", "Voice"])
+        self.table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.Stretch
+        )
+        self.table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.Stretch
+        )
+        self.table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows
+        )
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.horizontalHeader().setVisible(False)
+        self.table.verticalHeader().setVisible(False)
+        self.table.cellChanged.connect(self._on_cell_changed)
+        self.table.cellDoubleClicked.connect(self._on_cell_double_clicked)
+        # Voice column: wrap and ellipsize text
+        self.table.setItemDelegateForColumn(1, _VoiceItemDelegate(self.table))
+        content_layout.addWidget(self.table, 1)
+
+        # Footer buttons
+        button_row = QHBoxLayout()
+        self.add_btn = QPushButton("Add")
+        self.add_btn.setIcon(
+            style.standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton)
+        )
+        self.remove_btn = QPushButton("Remove")
+        self.remove_btn.setIcon(
+            style.standardIcon(QStyle.StandardPixmap.SP_DialogCloseButton)
+        )
+        button_row.addWidget(self.add_btn)
+        button_row.addWidget(self.remove_btn)
+        self.add_btn.clicked.connect(self._on_add)
+        self.remove_btn.clicked.connect(self._on_remove)
+        # Enter key on the panel opens the editor for the selected row
+        self._enter_action = QAction(self)
+        self._enter_action.setShortcut(Qt.Key.Key_Return)
+        self._enter_action.triggered.connect(self._on_enter)
+        self.addAction(self._enter_action)
+        content_layout.addLayout(button_row)
+
+        layout.addWidget(self.content)
+        self._set_collapsed(True)
+        # Fetch voices on startup so they're cached for the Add dialog
+        self._fetch_voices()
+
+    def _toggle(self) -> None:
+        self._set_collapsed(not self._collapsed)
+
+    def _set_collapsed(self, collapsed: bool) -> None:
+        self._collapsed = collapsed
+        self.content.setVisible(not collapsed)
+        self.toggle_btn.setIcon(
+            self.style().standardIcon(
+                QStyle.StandardPixmap.SP_ArrowRight
+                if collapsed
+                else QStyle.StandardPixmap.SP_ArrowLeft
+            )
+        )
+        self.setFixedWidth(
+            self.COLLAPSED_WIDTH if collapsed else self.EXPANDED_WIDTH
+        )
+
+    def _parse_voice_string(self, voice_str: str) -> list[tuple[str, int]]:
+        """Parse 'af_bella(2)+am_michael' into [('af_bella', 2), ('am_michael', 1)]."""
+        result: list[tuple[str, int]] = []
+        for part in voice_str.split("+"):
+            part = part.strip()
+            if "(" in part:
+                name, weight_str = part.rsplit("(", 1)
+                name = name.strip()
+                weight = int(weight_str.rstrip(")"))
+            else:
+                name = part
+                weight = 1
+            result.append((name, weight))
+        return result
+
+    def _fetch_voices(self) -> None:
+        self._cancel_fetch()
+        url = QUrl(self._settings.base_url.rstrip("/") + "/v1/audio/voices")
+        request = QNetworkRequest(url)
+        try:
+            request.setTransferTimeout(10_000)
+        except Exception:
+            pass
+        reply = self._nam.get(request)
+        self._reply = reply
+        reply.finished.connect(lambda r=reply: self._on_voices(r))
+
+    def _cancel_fetch(self) -> None:
+        reply, self._reply = self._reply, None
+        if reply is not None:
+            reply.abort()
+
+    def _on_voices(self, reply: QNetworkReply) -> None:
+        if reply is not self._reply:
+            reply.deleteLater()
+            return
+        self._reply = None
+        if reply.error() == QNetworkReply.NetworkError.NoError:
+            try:
+                import json
+
+                data = json.loads(bytes(reply.readAll().data()))
+                items = (
+                    data.get("voices", []) if isinstance(data, dict) else data
+                )
+                self._voices = []
+                for item in items:
+                    if isinstance(item, str):
+                        self._voices.append(item)
+                    elif isinstance(item, dict):
+                        name = (
+                            item.get("id")
+                            or item.get("name")
+                            or item.get("voice_id")
+                        )
+                        if name:
+                            self._voices.append(str(name))
+                self._voices = sorted(set(self._voices))
+            except (ValueError, TypeError, AttributeError):
+                pass
+        reply.deleteLater()
+
+    def _on_cell_double_clicked(self, row: int, _column: int) -> None:
+        self._editing_row = row
+        name_item = self.table.item(row, 0)
+        voice_item = self.table.item(row, 1)
+        self._edit_name = name_item.text() if name_item else ""
+        self._edit_voice = voice_item.text() if voice_item else ""
+        self._on_add()
+
+    def _on_enter(self) -> None:
+        row = self.table.currentRow()
+        if row < 0:
+            return
+        self._editing_row = row
+        name_item = self.table.item(row, 0)
+        voice_item = self.table.item(row, 1)
+        self._edit_name = name_item.text() if name_item else ""
+        self._edit_voice = voice_item.text() if voice_item else ""
+        self._on_add()
+
+    def _on_add(self) -> None:
+        editing_row = getattr(self, "_editing_row", -1)
+        initial_name = getattr(self, "_edit_name", "")
+        initial_voice = getattr(self, "_edit_voice", "")
+        dialog = QDialog(self)
+        dialog.setWindowTitle(
+            "Edit Character" if editing_row >= 0 else "Add Character"
+        )
+        dialog.setMinimumWidth(360)
+        layout = QVBoxLayout(dialog)
+
+        # Character name
+        form = QFormLayout()
+        self._name_edit = QLineEdit()
+        self._name_edit.setText(initial_name)
+        form.addRow("Character:", self._name_edit)
+        layout.addLayout(form)
+
+        # Voice selection
+        voice_group = QGroupBox("Voice mix")
+        voice_layout = QFormLayout(voice_group)
+        self._voice_boxes: list[QComboBox] = []
+        self._weight_boxes: list[QComboBox] = []
+        for i in range(3):
+            label = "required" if i == 0 else "optional"
+            row = QHBoxLayout()
+            voice_box = QComboBox()
+            voice_box.addItem("(none)", "")
+            for v in self._voices:
+                voice_box.addItem(v, v)
+            self._voice_boxes.append(voice_box)
+            weight_box = QComboBox()
+            for w in range(1, 11):
+                weight_box.addItem(str(w), w)
+            weight_box.setCurrentIndex(0)
+            self._weight_boxes.append(weight_box)
+            row.addWidget(voice_box, 1)
+            row.addWidget(weight_box)
+            voice_layout.addRow(f"Voice {i + 1} ({label})", row)
+
+        self._voice_string_edit = QLineEdit()
+        self._voice_string_edit.setReadOnly(True)
+        self._voice_string_edit.setStyleSheet("color: gray;")
+        voice_layout.addRow("Resulting voice", self._voice_string_edit)
+
+        layout.addWidget(voice_group)
+
+        # Populate from initial values when editing
+        if initial_voice:
+            parsed = self._parse_voice_string(initial_voice)
+            for i, (name, weight) in enumerate(parsed):
+                if i < len(self._voice_boxes):
+                    self._voice_boxes[i].setCurrentText(name)
+                    self._weight_boxes[i].setCurrentText(str(weight))
+
+        # Connect voice changes to update the computed string
+        for box in self._voice_boxes + self._weight_boxes:
+            box.currentIndexChanged.connect(self._update_dialog_voice_string)
+        self._update_dialog_voice_string()
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            name = self._name_edit.text().strip()
+            if not name:
+                return
+            voices = [b.currentData() or "" for b in self._voice_boxes]
+            weights = [b.currentData() or 1 for b in self._weight_boxes]
+            voice_str = build_voice_string(voices, weights)
+            if editing_row >= 0:
+                self.table.setItem(editing_row, 0, QTableWidgetItem(name))
+                self.table.setItem(editing_row, 1, QTableWidgetItem(voice_str))
+            else:
+                row = self.table.rowCount()
+                self.table.insertRow(row)
+                self.table.setItem(row, 0, QTableWidgetItem(name))
+                self.table.setItem(row, 1, QTableWidgetItem(voice_str))
+            self.table.resizeRowsToContents()
+            self.table.scrollToBottom()
+            self._editing_row = -1
+
+    def _update_dialog_voice_string(self) -> None:
+        voices = [b.currentData() or "" for b in self._voice_boxes]
+        weights = [b.currentData() or 1 for b in self._weight_boxes]
+        self._voice_string_edit.setText(build_voice_string(voices, weights))
+
+    def _update_dialog_voice_string(self) -> None:
+        voices = [b.currentData() or "" for b in self._voice_boxes]
+        weights = [b.currentData() or 1 for b in self._weight_boxes]
+        self._voice_string_edit.setText(build_voice_string(voices, weights))
+
+    def _on_remove(self) -> None:
+        current = self.table.currentRow()
+        if current < 0:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Remove Character",
+            "Remove this character?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self.table.removeRow(current)
+            self.table.resizeRowsToContents()
+
+    def _on_cell_changed(self, row: int, _column: int) -> None:
+        self.table.resizeRowsToContents()
+        item = self.table.item(row, 0)
+        if item:
+            item.setTextAlignment(
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+            )
+        item = self.table.item(row, 1)
+        if item:
+            item.setTextAlignment(
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+            )
 
 
 class MainWindow(QMainWindow):
@@ -137,9 +530,15 @@ class MainWindow(QMainWindow):
         controls.addStretch(1)
         controls.addWidget(self.summary_label)
 
+        self.panel = PanelWidget(self.settings, self)
+
+        top = QHBoxLayout()
+        top.addWidget(self.text_edit, 1)
+        top.addWidget(self.panel)
+
         central = QWidget()
         layout = QVBoxLayout(central)
-        layout.addWidget(self.text_edit, 1)
+        layout.addLayout(top)
         layout.addLayout(controls)
         layout.addWidget(self.seek_slider)
         layout.addWidget(self.status_label)
@@ -166,7 +565,9 @@ class MainWindow(QMainWindow):
 
         file_menu = bar.addMenu("&File")
         file_menu.addAction(self._action("&New", self.new_document, Key.New))
-        file_menu.addAction(self._action("&Open…", self.open_document, Key.Open))
+        file_menu.addAction(
+            self._action("&Open…", self.open_document, Key.Open)
+        )
         self.recent_menu = file_menu.addMenu("Open &Recent")
         # Rebuilt on every show so lists saved by other running instances appear too.
         self.recent_menu.aboutToShow.connect(self._update_recent_menu)
@@ -208,7 +609,9 @@ class MainWindow(QMainWindow):
         self.play_action = self._action(
             "&Play", self._on_play_clicked, "Ctrl+Space"
         )
-        self.stop_action = self._action("&Stop", self._on_stop_clicked, "Ctrl+.")
+        self.stop_action = self._action(
+            "&Stop", self._on_stop_clicked, "Ctrl+."
+        )
         self.back_action = self._action(
             "Scrub &Back", lambda: self._scrub(-1), "Alt+Left"
         )
@@ -242,10 +645,16 @@ class MainWindow(QMainWindow):
         files = load_recent_files()
         home = os.path.expanduser("~")
         for number, path in enumerate(files, start=1):
-            shown = "~" + path[len(home) :] if path.startswith(home + os.sep) else path
+            shown = (
+                "~" + path[len(home) :]
+                if path.startswith(home + os.sep)
+                else path
+            )
             # Escape & so Qt doesn't treat it as a mnemonic marker.
             action = menu.addAction(f"&{number}  {shown.replace('&', '&&')}")
-            action.triggered.connect(lambda _=False, p=path: self._open_recent(p))
+            action.triggered.connect(
+                lambda _=False, p=path: self._open_recent(p)
+            )
         if not files:
             menu.addAction("No recent files").setEnabled(False)
         menu.addSeparator()
@@ -321,7 +730,9 @@ class MainWindow(QMainWindow):
             with open(path, encoding="utf-8") as f:
                 text = f.read()
         except (OSError, UnicodeDecodeError) as exc:
-            QMessageBox.critical(self, "Could not open file", f"{path}\n\n{exc}")
+            QMessageBox.critical(
+                self, "Could not open file", f"{path}\n\n{exc}"
+            )
             return
         self._set_document(text, path)
         self._remember_file(path)
@@ -333,8 +744,12 @@ class MainWindow(QMainWindow):
         return self._write(self._path)
 
     def save_as(self) -> bool:
-        start = self._path or os.path.join(self._dialog_dir(), f"{UNTITLED}.txt")
-        path, _ = QFileDialog.getSaveFileName(self, "Save As", start, FILE_FILTER)
+        start = self._path or os.path.join(
+            self._dialog_dir(), f"{UNTITLED}.txt"
+        )
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save As", start, FILE_FILTER
+        )
         if not path:
             return False
         return self._write(path)
@@ -344,7 +759,9 @@ class MainWindow(QMainWindow):
             with open(path, "w", encoding="utf-8") as f:
                 f.write(self.text_edit.toPlainText())
         except OSError as exc:
-            QMessageBox.critical(self, "Could not save file", f"{path}\n\n{exc}")
+            QMessageBox.critical(
+                self, "Could not save file", f"{path}\n\n{exc}"
+            )
             return False
         self._path = os.path.abspath(path)
         self.text_edit.document().setModified(False)
@@ -515,7 +932,7 @@ class MainWindow(QMainWindow):
     def _on_ready(self, reply: QNetworkReply) -> None:
         if reply is not self._reply or self._player is None:
             return
-        data = reply.readAll().data()
+        data = bytes(reply.readAll().data())
         status = reply.attribute(
             QNetworkRequest.Attribute.HttpStatusCodeAttribute
         )
@@ -534,7 +951,7 @@ class MainWindow(QMainWindow):
             QNetworkRequest.Attribute.HttpStatusCodeAttribute
         )
         error = reply.error()
-        leftover = reply.readAll().data()
+        leftover = bytes(reply.readAll().data())
         error_text = reply.errorString()
         reply.deleteLater()
         if player is None:

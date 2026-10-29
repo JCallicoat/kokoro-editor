@@ -70,7 +70,10 @@ class AppSettings:
             model=s.value("model", d.model, type=str),
             voices=[s.value(f"voice{i}", "", type=str) for i in slots],
             weights=[
-                min(max(s.value(f"weight{i}", 1, type=int), 1), MAX_VOICE_WEIGHT)
+                min(
+                    max(s.value(f"weight{i}", 1, type=int), 1),
+                    MAX_VOICE_WEIGHT,
+                )
                 for i in slots
             ],
             speed=s.value("speed", d.speed, type=float),
@@ -81,7 +84,9 @@ class AppSettings:
             prebuffer_ms=s.value("prebuffer_ms", d.prebuffer_ms, type=int),
             scrub_step_s=s.value("scrub_step_s", d.scrub_step_s, type=int),
             ssml=s.value("ssml", d.ssml, type=bool),
-            restore_session=s.value("restore_session", d.restore_session, type=bool),
+            restore_session=s.value(
+                "restore_session", d.restore_session, type=bool
+            ),
         )
 
     def save(self) -> None:
