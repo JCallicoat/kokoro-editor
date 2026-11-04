@@ -14,6 +14,10 @@ VOICE_SLOTS = 3
 MAX_VOICE_WEIGHT = 10
 MIN_FONT_SIZE = 6
 MAX_FONT_SIZE = 72
+REQUEST_INACTIVITY_TIMEOUT_MS = (
+    120_000  # Qt 6 defaults to 30 s, too short for slow first chunks
+)
+VOICES_TIMEOUT_MS = 10_000
 
 
 def build_voice_string(voices: list[str], weights: list[int]) -> str:
@@ -26,6 +30,21 @@ def build_voice_string(voices: list[str], weights: list[int]) -> str:
     if len(chosen) > 1 and len({w for _, w in chosen}) > 1:
         return "+".join(f"{v}({w})" for v, w in chosen)
     return "+".join(v for v, _ in chosen)
+
+
+def parse_voice_string(voice_string: str) -> tuple[list[str], list[int]]:
+    """The inverse of build_voice_string, padded to VOICE_SLOTS entries."""
+    voices = [""] * VOICE_SLOTS
+    weights = [1] * VOICE_SLOTS
+    parts = [p.strip() for p in voice_string.split("+") if p.strip()]
+    for i, part in enumerate(parts[:VOICE_SLOTS]):
+        name, _, weight = part.partition("(")
+        voices[i] = name.strip()
+        try:
+            weights[i] = min(max(int(weight.rstrip(")")), 1), MAX_VOICE_WEIGHT)
+        except ValueError:
+            pass  # no weight given
+    return voices, weights
 
 
 @dataclass
@@ -185,10 +204,13 @@ def speech_request(base_url: str, timeout_ms: int) -> QNetworkRequest:
     request.setHeader(
         QNetworkRequest.KnownHeaders.ContentTypeHeader, "application/json"
     )
-    try:
-        request.setTransferTimeout(timeout_ms)
-    except Exception:
-        pass
+    request.setTransferTimeout(timeout_ms)
+    return request
+
+
+def voices_request(base_url: str) -> QNetworkRequest:
+    request = QNetworkRequest(api_url(base_url, "/v1/audio/voices"))
+    request.setTransferTimeout(VOICES_TIMEOUT_MS)
     return request
 
 

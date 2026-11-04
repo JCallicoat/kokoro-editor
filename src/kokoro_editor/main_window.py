@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Callable
 
 from PySide6.QtCore import (
     QByteArray,
@@ -12,7 +13,6 @@ from PySide6.QtCore import (
     Qt,
     QSize,
     QTimer,
-    QUrl,
 )
 from PySide6.QtGui import QAction, QCursor, QKeySequence, QPainter
 from PySide6.QtNetwork import (
@@ -21,15 +21,12 @@ from PySide6.QtNetwork import (
     QNetworkRequest,
 )
 from PySide6.QtWidgets import (
-    QAbstractItemView,
     QCheckBox,
     QDialog,
     QDialogButtonBox,
-    QComboBox,
     QFileDialog,
     QHBoxLayout,
     QFormLayout,
-    QGroupBox,
     QHeaderView,
     QLabel,
     QLineEdit,
@@ -52,30 +49,31 @@ from kokoro_editor import audio
 from kokoro_editor.audio import PCMPlayer
 from kokoro_editor.render_dialog import RenderDialog
 from kokoro_editor.settings import (
+    REQUEST_INACTIVITY_TIMEOUT_MS,
     AppSettings,
     add_recent_file,
-    build_voice_string,
     describe_http_error,
+    extract_voice_names,
     fmt_time,
     load_last_dir,
     load_recent_files,
     load_window_geometry,
+    parse_voice_string,
     remove_recent_file,
     save_last_dir,
     save_recent_files,
     save_window_geometry,
     speech_payload,
     speech_request,
+    voices_request,
 )
 from kokoro_editor.settings_dialog import SettingsDialog
+from kokoro_editor.voice_mix import VoiceMixWidget
 from kokoro_editor.widgets import SeekSlider
 
 APP_NAME = "Kokoro Editor"
 UNTITLED = "Untitled"
 FILE_FILTER = "Text files (*.txt);;All files (*)"
-REQUEST_INACTIVITY_TIMEOUT_MS = (
-    120_000  # Qt 6 defaults to 30 s, too short for slow first chunks
-)
 
 
 class _VoiceItemDelegate(QStyledItemDelegate):
@@ -132,6 +130,49 @@ class _VoiceItemDelegate(QStyledItemDelegate):
         return True
 
 
+class CharacterDialog(QDialog):
+    """Add or edit a character: a name and the voice mix it speaks with."""
+
+    def __init__(
+        self,
+        voices: list[str],
+        settings_fn: Callable[[], AppSettings],
+        nam: QNetworkAccessManager,
+        on_preview_active: Callable[[bool], None],
+        name: str = "",
+        voice_string: str = "",
+        editing: bool = False,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Edit Character" if editing else "Add Character")
+        self.setMinimumWidth(360)
+
+        self.name_edit = QLineEdit(name)
+        form = QFormLayout()
+        form.addRow("Character:", self.name_edit)
+
+        # Voices are optional so characters can be jotted down quickly and
+        # given voices later.
+        self.voice_mix = VoiceMixWidget(
+            settings_fn, nam, on_preview_active, require_first=False
+        )
+        self.voice_mix.set_choices(voices)
+        self.voice_mix.set_mix(*parse_voice_string(voice_string))
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(self.voice_mix)
+        layout.addWidget(buttons)
+
+
 class PanelWidget(QWidget):
     """Collapsible side panel with a Characters label and Add/Remove buttons."""
 
@@ -139,19 +180,21 @@ class PanelWidget(QWidget):
     EXPANDED_WIDTH = 220
 
     def __init__(
-        self, settings: AppSettings, parent: QWidget | None = None
+        self,
+        settings: AppSettings,
+        nam: QNetworkAccessManager,
+        on_preview_active: Callable[[bool], None],
+        parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.setFixedWidth(self.EXPANDED_WIDTH)
         self._settings = settings
+        self._nam = nam
+        self._on_preview_active = on_preview_active
 
         self._collapsed = True
-        self._nam = QNetworkAccessManager(self)
         self._voices: list[str] = []
         self._reply: QNetworkReply | None = None
-        self._active_play_btn: QPushButton | None = None
-        self._last_active_btn: QPushButton | None = None
-        self._example_player: PCMPlayer | None = None
 
         # Main layout
         layout = QVBoxLayout(self)
@@ -247,30 +290,17 @@ class PanelWidget(QWidget):
             self.COLLAPSED_WIDTH if collapsed else self.EXPANDED_WIDTH
         )
 
-    def _parse_voice_string(self, voice_str: str) -> list[tuple[str, int]]:
-        """Parse 'af_bella(2)+am_michael' into [('af_bella', 2), ('am_michael', 1)]."""
-        result: list[tuple[str, int]] = []
-        for part in voice_str.split("+"):
-            part = part.strip()
-            if "(" in part:
-                name, weight_str = part.rsplit("(", 1)
-                name = name.strip()
-                weight = int(weight_str.rstrip(")"))
-            else:
-                name = part
-                weight = 1
-            result.append((name, weight))
-        return result
+    def set_settings(self, settings: AppSettings) -> None:
+        # Refetch for a new server, or retry if the last attempt failed.
+        retry = not self._voices and self._reply is None
+        refetch = settings.base_url != self._settings.base_url
+        self._settings = settings
+        if refetch or retry:
+            self._fetch_voices()
 
     def _fetch_voices(self) -> None:
         self._cancel_fetch()
-        url = QUrl(self._settings.base_url.rstrip("/") + "/v1/audio/voices")
-        request = QNetworkRequest(url)
-        try:
-            request.setTransferTimeout(10_000)
-        except Exception:
-            pass
-        reply = self._nam.get(request)
+        reply = self._nam.get(voices_request(self._settings.base_url))
         self._reply = reply
         reply.finished.connect(lambda r=reply: self._on_voices(r))
 
@@ -280,34 +310,18 @@ class PanelWidget(QWidget):
             reply.abort()
 
     def _on_voices(self, reply: QNetworkReply) -> None:
-        if reply is not self._reply:
-            reply.deleteLater()
+        reply.deleteLater()
+        if reply is not self._reply:  # cancelled or superseded
             return
         self._reply = None
-        if reply.error() == QNetworkReply.NetworkError.NoError:
-            try:
-                import json
-
-                data = json.loads(bytes(reply.readAll().data()))
-                items = (
-                    data.get("voices", []) if isinstance(data, dict) else data
-                )
-                self._voices = []
-                for item in items:
-                    if isinstance(item, str):
-                        self._voices.append(item)
-                    elif isinstance(item, dict):
-                        name = (
-                            item.get("id")
-                            or item.get("name")
-                            or item.get("voice_id")
-                        )
-                        if name:
-                            self._voices.append(str(name))
-                self._voices = sorted(set(self._voices))
-            except (ValueError, TypeError, AttributeError):
-                pass
-        reply.deleteLater()
+        if reply.error() != QNetworkReply.NetworkError.NoError:
+            return
+        try:
+            self._voices = extract_voice_names(
+                json.loads(reply.readAll().data())
+            )
+        except (ValueError, TypeError, AttributeError):
+            pass
 
     def _on_cell_double_clicked(self, row: int, _column: int) -> None:
         self._edit_row(row)
@@ -336,293 +350,30 @@ class PanelWidget(QWidget):
         initial_name: str = "",
         initial_voice: str = "",
     ) -> None:
-        dialog = QDialog(self)
-        dialog.setWindowTitle(
-            "Edit Character" if editing_row >= 0 else "Add Character"
+        dialog = CharacterDialog(
+            self._voices,
+            lambda: self._settings,
+            self._nam,
+            self._on_preview_active,
+            initial_name,
+            initial_voice,
+            editing=editing_row >= 0,
+            parent=self,
         )
-        dialog.setMinimumWidth(360)
-        layout = QVBoxLayout(dialog)
-
-        # Character name
-        form = QFormLayout()
-        self._name_edit = QLineEdit()
-        self._name_edit.setText(initial_name)
-        form.addRow("Character:", self._name_edit)
-        layout.addLayout(form)
-
-        # Voice selection
-        voice_group = QGroupBox("Voice mix")
-        voice_layout = QFormLayout(voice_group)
-        self._voice_boxes: list[QComboBox] = []
-        self._weight_boxes: list[QComboBox] = []
-        self._voice_play_btns: list[QPushButton] = []
-        for i in range(3):
-            label = "required" if i == 0 else "optional"
-            row = QHBoxLayout()
-            voice_box = QComboBox()
-            voice_box.addItem("(none)", "")
-            for v in self._voices:
-                voice_box.addItem(v, v)
-            self._voice_boxes.append(voice_box)
-            weight_box = QComboBox()
-            for w in range(1, 11):
-                weight_box.addItem(str(w), w)
-            weight_box.setCurrentIndex(0)
-            self._weight_boxes.append(weight_box)
-            row.addWidget(voice_box, 1)
-            row.addWidget(weight_box)
-            play_btn = QPushButton()
-            play_btn.setFlat(True)
-            play_btn.setFixedWidth(24)
-            play_btn.setIcon(
-                self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay)
-            )
-            play_btn.clicked.connect(
-                lambda _=False, i=i: self._play_example_voice(i)
-            )
-            row.addWidget(play_btn)
-            self._voice_play_btns.append(play_btn)
-            voice_layout.addRow(f"Voice {i + 1} ({label})", row)
-
-        self._voice_string_edit = QLineEdit()
-        self._voice_string_edit.setReadOnly(True)
-        self._voice_string_edit.setStyleSheet("color: gray;")
-        self._voice_mix_play_btn = QPushButton()
-        self._voice_mix_play_btn.setFlat(True)
-        self._voice_mix_play_btn.setIcon(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay)
-        )
-        self._voice_mix_play_btn.clicked.connect(self._play_mixed_voice)
-        row2 = QHBoxLayout()
-        row2.addWidget(self._voice_string_edit, 1)
-        row2.addWidget(self._voice_mix_play_btn)
-        voice_layout.addRow("Resulting voice", row2)
-
-        layout.addWidget(voice_group)
-
-        # Populate from initial values when editing
-        if initial_voice:
-            parsed = self._parse_voice_string(initial_voice)
-            for i, (name, weight) in enumerate(parsed):
-                if i < len(self._voice_boxes):
-                    self._voice_boxes[i].setCurrentText(name)
-                    self._weight_boxes[i].setCurrentText(str(weight))
-
-        # Connect voice changes to update the computed string
-        for box in self._voice_boxes + self._weight_boxes:
-            box.currentIndexChanged.connect(self._update_dialog_voice_string)
-        self._update_dialog_voice_string()
-
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok
-            | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
-        layout.addWidget(buttons)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            name = self._name_edit.text().strip()
-            if not name:
-                return
-            voices = [b.currentData() or "" for b in self._voice_boxes]
-            weights = [b.currentData() or 1 for b in self._weight_boxes]
-            voice_str = build_voice_string(voices, weights)
-            if editing_row >= 0:
-                self.table.setItem(editing_row, 0, QTableWidgetItem(name))
-                self.table.setItem(editing_row, 1, QTableWidgetItem(voice_str))
-            else:
-                row = self.table.rowCount()
-                self.table.insertRow(row)
-                self.table.setItem(row, 0, QTableWidgetItem(name))
-                self.table.setItem(row, 1, QTableWidgetItem(voice_str))
-            self.table.resizeRowsToContents()
-            self.table.scrollToBottom()
-
-    def _update_dialog_voice_string(self) -> None:
-        voices = [b.currentData() or "" for b in self._voice_boxes]
-        weights = [b.currentData() or 1 for b in self._weight_boxes]
-        self._voice_string_edit.setText(build_voice_string(voices, weights))
-
-    # -- example voice playback --------------------------------------------- #
-    def _play_example_voice(self, index: int) -> None:
-        voice_name = self._voice_boxes[index].currentData()
-        if not voice_name:
+        accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        name = dialog.name_edit.text().strip()
+        voice_str = dialog.voice_mix.voice_string()
+        dialog.deleteLater()
+        if not accepted or not name:
             return
-        self._play_example(
-            f"Hello! I am {voice_name} voice provided by the kokoro API. This is how I sound.",
-            voice_name,
-            self._voice_play_btns[index],
-        )
-
-    def _play_mixed_voice(self) -> None:
-        voice_str = self._voice_string_edit.text()
-        if not voice_str:
-            return
-        self._play_example(
-            "Hello! I am the mixed voice provided by the kokoro API. This is how I sound.",
-            voice_str,
-            self._voice_mix_play_btn,
-        )
-
-    def _play_example(
-        self, text: str, voice: str, btn: QPushButton | None = None
-    ) -> None:
-        # Pause main window player if playing
-        self._parent = None
-        # Walk up the parent chain to find the MainWindow (parent is PanelWidget)
-        parent = self.parent()
-        main_window = None
-        while parent is not None:
-            if hasattr(parent, "_player") and parent._player is not None:
-                main_window = parent
-                break
-            parent = parent.parent()
-        if main_window is not None:
-            main_window._player.set_paused(True)
-            self._parent = main_window
-
-        # If something is already playing
-        if self._is_example_playing():
-            old_btn = self._active_play_btn
-            self._reply = None
-            # Cancel the polling timer
-            if hasattr(self, "_check_timer") and self._check_timer is not None:
-                self._check_timer.stop()
-            # Reset old button icon to play
-            if old_btn is not None:
-                old_btn.setIcon(
-                    self.style().standardIcon(
-                        QStyle.StandardPixmap.SP_MediaPlay
-                    )
-                )
-            # If clicking the same button (or the last-active button after
-            # audio finished), just stop (resume main player)
-            if btn is old_btn or btn is self._last_active_btn:
-                self._active_play_btn = None
-                self._last_active_btn = None
-                # Actually stop playback by closing and resetting the stream
-                if self._example_player is not None:
-                    self._example_player.close(drain=False)
-                    self._example_player = None
-                # Reset button icon to play
-                btn.setIcon(
-                    self.style().standardIcon(
-                        QStyle.StandardPixmap.SP_MediaPlay
-                    )
-                )
-                if main_window is not None:
-                    main_window._player.set_paused(False)
-                return
-            # Otherwise switch to new voice
-            self._active_play_btn = btn
-
-        self._active_play_btn = btn
-        self._last_active_btn = btn
-        self._set_example_playing(True)
-
-        from kokoro_editor.settings import speech_payload, speech_request
-
-        s = self._settings
-        if self._example_player is None:
-            self._example_player = PCMPlayer(s.sample_rate, s.prebuffer_ms)
-            try:
-                self._example_player.open()
-            except Exception:
-                self._set_example_playing(False)
-                self._active_play_btn = None
-                if main_window is not None:
-                    main_window._player.set_paused(False)
-                return
-
-        # Reset buffer for new playback
-        self._example_player.reset()
-
-        payload = speech_payload(s, text, "pcm", stream=True, voice=voice)
-        request = speech_request(s.base_url, 120_000)
-        reply = self._nam.post(
-            request, QByteArray(json.dumps(payload).encode("utf-8"))
-        )
-
-        player = self._example_player
-
-        def _on_ready() -> None:
-            if reply is not self._reply:
-                return
-            data = bytes(reply.readAll().data())
-            if not data:
-                return
-            status = reply.attribute(
-                QNetworkRequest.Attribute.HttpStatusCodeAttribute
-            )
-            if status is not None and status >= 400:
-                return
-            player.feed(data)
-
-        def _on_finished() -> None:
-            if reply is not self._reply:
-                return
-            self._reply = None
-            status = reply.attribute(
-                QNetworkRequest.Attribute.HttpStatusCodeAttribute
-            )
-            if status is not None and status >= 400:
-                return
-            leftover = bytes(reply.readAll().data())
-            if leftover:
-                player.feed(leftover)
-            player.mark_complete()
-
-        reply.readyRead.connect(_on_ready)
-        reply.finished.connect(_on_finished)
-        self._reply = reply
-
-        # Poll player state to reset icon when playback actually finishes
-        self._check_timer = QTimer(self)
-        self._check_timer.setSingleShot(True)
-        self._check_timer.setInterval(200)
-        self._check_timer.timeout.connect(
-            lambda: self._check_playback_finished(player)
-        )
-        self._check_timer.start()
-
-    def _check_playback_finished(self, player: PCMPlayer) -> None:
-        """Check if player has finished and reset the button icon."""
-        state = player.snapshot()
-        if state.finished or (
-            state.complete and not state.primed and state.total_s == 0
-        ):
-            self._set_example_playing(False)
-            self._active_play_btn = None
-            # Resume main window player
-            if (
-                self._parent
-                and hasattr(self._parent, "_player")
-                and self._parent._player is not None
-            ):
-                self._parent._player.set_paused(False)
-            # Don't clear _last_active_btn so stop-click detection works
-        # Continue polling if audio hasn't finished
-        if not state.finished:
-            self._check_timer = QTimer(self)
-            self._check_timer.setSingleShot(True)
-            self._check_timer.setInterval(200)
-            self._check_timer.timeout.connect(
-                lambda: self._check_playback_finished(player)
-            )
-            self._check_timer.start()
-
-    def _is_example_playing(self) -> bool:
-        return self._reply is not None or self._active_play_btn is not None
-
-    def _set_example_playing(self, playing: bool) -> None:
-        if self._active_play_btn is None:
-            return
-        icon = (
-            QStyle.StandardPixmap.SP_MediaStop
-            if playing
-            else QStyle.StandardPixmap.SP_MediaPlay
-        )
-        self._active_play_btn.setIcon(self.style().standardIcon(icon))
+        row = editing_row
+        if row < 0:
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+        self.table.setItem(row, 0, QTableWidgetItem(name))
+        self.table.setItem(row, 1, QTableWidgetItem(voice_str))
+        self.table.resizeRowsToContents()
+        self.table.scrollToBottom()
 
     def _on_remove(self) -> None:
         current = self.table.currentRow()
@@ -667,6 +418,7 @@ class MainWindow(QMainWindow):
         self._player: PCMPlayer | None = None
         self._error_body = b""
         self._warning = ""
+        self._resume_after_preview = False
 
         self._timer = QTimer(self)
         self._timer.setInterval(100)
@@ -733,7 +485,9 @@ class MainWindow(QMainWindow):
         controls.addStretch(1)
         controls.addWidget(self.summary_label)
 
-        self.panel = PanelWidget(self.settings, self)
+        self.panel = PanelWidget(
+            self.settings, self._nam, self._on_preview_active, self
+        )
 
         top = QHBoxLayout()
         top.addWidget(self.text_edit, 1)
@@ -977,6 +731,7 @@ class MainWindow(QMainWindow):
     def _apply_settings(self) -> None:
         """Push the current settings into the UI (at startup and after Settings)."""
         self.text_edit.setFont(self.settings.editor_font())
+        self.panel.set_settings(self.settings)
         self._update_summary()
 
     def _update_summary(self) -> None:
@@ -1024,11 +779,30 @@ class MainWindow(QMainWindow):
         self.settings.save()
 
     def _open_settings(self) -> None:
-        dialog = SettingsDialog(self.settings, self)
+        dialog = SettingsDialog(
+            self.settings, self._nam, self._on_preview_active, self
+        )
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.settings = dialog.result_settings()
             self.settings.save()
             self._apply_settings()
+        dialog.deleteLater()
+
+    def _on_preview_active(self, active: bool) -> None:
+        """Pause document playback while a voice preview plays, then resume
+        it, unless it was already paused."""
+        if active:
+            player = self._player
+            self._resume_after_preview = (
+                player is not None and not player.paused
+            )
+            if self._resume_after_preview:
+                player.set_paused(True)
+        elif self._resume_after_preview:
+            self._resume_after_preview = False
+            if self._player is not None:
+                self._player.set_paused(False)
+        self._refresh_ui()
 
     def _text_to_speak(self) -> str:
         """The selection if there is one, otherwise the whole document."""
