@@ -182,6 +182,7 @@ class PanelWidget(QWidget):
     EXPANDED_WIDTH = 220
 
     characters_changed = Signal()
+    character_renamed = Signal(str, str)  # old name, new name
 
     def __init__(
         self,
@@ -552,8 +553,10 @@ class PanelWidget(QWidget):
         dialog.deleteLater()
         if not accepted:
             return
+        old_name = None
         if editing:
             row = editing_row
+            old_name = self._characters[row].name
             self._characters[row] = character
         else:
             row = len(self._characters)
@@ -561,6 +564,8 @@ class PanelWidget(QWidget):
         self._refresh_table()
         self.table.selectRow(row)
         self.characters_changed.emit()
+        if old_name is not None and old_name != character.name:
+            self.character_renamed.emit(old_name, character.name)
 
     def _on_remove(self) -> None:
         character = self.selected_character()

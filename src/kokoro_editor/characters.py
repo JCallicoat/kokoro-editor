@@ -43,6 +43,12 @@ def voice_tag(name: str) -> str:
     return f"[voice:{name}]"
 
 
+def voice_tag_pattern(name: str) -> str:
+    """Regex for name's tags, spaced as the server allows. Match it
+    case-insensitively, as the server does."""
+    return rf"\[voice:\s*{re.escape(name)}\s*\]"
+
+
 def voice_aliases(characters: list[Character]) -> dict[str, str]:
     """The voice_aliases request field. Characters without a voice are left
     out, since the server rejects an alias with an empty mix."""

@@ -7,10 +7,11 @@ import os
 
 from PySide6.QtCore import (
     QByteArray,
+    QRegularExpression,
     Qt,
     QTimer,
 )
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtGui import QAction, QKeySequence, QTextCursor
 from PySide6.QtNetwork import (
     QNetworkAccessManager,
     QNetworkReply,
@@ -38,6 +39,7 @@ from kokoro_editor.characters import (
     Character,
     unvoiced_tag_names,
     voice_tag,
+    voice_tag_pattern,
 )
 from kokoro_editor.characters_panel import PanelWidget
 from kokoro_editor.render_dialog import RenderDialog
@@ -149,6 +151,7 @@ class MainWindow(QMainWindow):
         self.panel = PanelWidget(
             self.settings, self._nam, self._on_preview_active, self
         )
+        self.panel.character_renamed.connect(self._rename_voice_tags)
 
         top = QHBoxLayout()
         top.addWidget(self.text_edit, 1)
@@ -491,6 +494,31 @@ class MainWindow(QMainWindow):
             self.status_label.setText("Choose a voice first.")
             self._open_settings()
         return bool(self.settings.voice_string)
+
+    def _rename_voice_tags(self, old: str, new: str) -> None:
+        """Point the document's tags for a renamed character at its new
+        name, as a single undo step."""
+        document = self.text_edit.document()
+        pattern = QRegularExpression(
+            voice_tag_pattern(old),
+            QRegularExpression.PatternOption.CaseInsensitiveOption,
+        )
+        # QTextDocument.find works in Qt's own positions, which differ from
+        # Python string indices once the text has characters beyond U+FFFF.
+        block = QTextCursor(document)
+        block.beginEditBlock()
+        count = 0
+        found = document.find(pattern, 0)
+        while not found.isNull():
+            found.insertText(voice_tag(new))
+            count += 1
+            found = document.find(pattern, found.position())
+        block.endEditBlock()
+        if count:
+            tags = "tag" if count == 1 else "tags"
+            self.status_label.setText(
+                f"Renamed {count} {tags} from {old} to {new}."
+            )
 
     def insert_voice_tag(self, character: Character) -> None:
         """Insert character's [voice:...] tag at the cursor (the start of
