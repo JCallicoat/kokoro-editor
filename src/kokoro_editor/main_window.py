@@ -4,18 +4,13 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Callable
 
 from PySide6.QtCore import (
     QByteArray,
-    QModelIndex,
-    QPersistentModelIndex,
     Qt,
-    QSize,
     QTimer,
-    Signal,
 )
-from PySide6.QtGui import QAction, QCursor, QKeySequence, QPainter
+from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtNetwork import (
     QNetworkAccessManager,
     QNetworkReply,
@@ -24,24 +19,15 @@ from PySide6.QtNetwork import (
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
-    QDialogButtonBox,
     QFileDialog,
     QHBoxLayout,
-    QFormLayout,
-    QHeaderView,
     QLabel,
-    QLineEdit,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QSizePolicy,
-    QStyledItemDelegate,
-    QStyleOptionViewItem,
     QStyle,
-    QTableWidget,
-    QTableWidgetItem,
-    QToolTip,
     QVBoxLayout,
     QWidget,
 )
@@ -50,394 +36,33 @@ from kokoro_editor import audio
 from kokoro_editor.audio import PCMPlayer
 from kokoro_editor.characters import (
     Character,
-    name_error,
     unvoiced_tag_names,
-    voice_aliases,
     voice_tag,
 )
+from kokoro_editor.characters_panel import PanelWidget
 from kokoro_editor.render_dialog import RenderDialog
 from kokoro_editor.settings import (
     REQUEST_INACTIVITY_TIMEOUT_MS,
     AppSettings,
     add_recent_file,
     describe_http_error,
-    extract_voice_names,
     fmt_time,
     load_last_dir,
     load_recent_files,
     load_window_geometry,
-    parse_voice_string,
     remove_recent_file,
     save_last_dir,
     save_recent_files,
     save_window_geometry,
     speech_payload,
     speech_request,
-    voices_request,
 )
 from kokoro_editor.settings_dialog import SettingsDialog
-from kokoro_editor.voice_mix import VoiceMixWidget
 from kokoro_editor.widgets import SeekSlider
 
 APP_NAME = "Kokoro Editor"
 UNTITLED = "Untitled"
 FILE_FILTER = "Text files (*.txt);;All files (*)"
-
-
-class _VoiceItemDelegate(QStyledItemDelegate):
-    """Delegate that wraps text in table cells and expands row height."""
-
-    def paint(
-        self,
-        painter: QPainter,
-        option: QStyleOptionViewItem,
-        index: QModelIndex | QPersistentModelIndex,
-    ) -> None:
-        style = option.widget.style() if option.widget else None
-        option.displayAlignment = (
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
-        )
-        # Draw the background
-        if style:
-            style.drawControl(
-                QStyle.ControlElement.CE_ItemViewItem, option, painter
-            )
-        # Draw wrapped text, replacing + with newlines for display
-        text = index.data(Qt.ItemDataRole.DisplayRole) or ""
-        display_text = text.replace("+", "\n")
-        rect = option.rect
-        # Draw text with word wrap, centered vertically
-        flags = (
-            Qt.AlignmentFlag.AlignLeft
-            | Qt.AlignmentFlag.AlignVCenter
-            | Qt.TextFlag.TextWordWrap
-        )
-        painter.drawText(rect, int(flags), display_text)
-
-    def sizeHint(
-        self,
-        option: QStyleOptionViewItem,
-        index: QModelIndex | QPersistentModelIndex,
-    ) -> QSize:
-        text = index.data(Qt.ItemDataRole.DisplayRole) or ""
-        display_text = text.replace("+", "\n")
-        # Calculate wrapped height
-        font_metrics = option.fontMetrics
-        rect = font_metrics.boundingRect(
-            option.rect,
-            int(Qt.AlignmentFlag.AlignLeft | Qt.TextFlag.TextWordWrap),
-            display_text,
-        )
-        height = max(rect.height(), option.rect.height())
-        return QSize(option.rect.width(), height)
-
-    def helpEvent(self, event, _widget, option, index) -> bool:
-        text = index.data(Qt.ItemDataRole.DisplayRole) or ""
-        if text:
-            QToolTip.showText(QCursor.pos(), text, option.widget)
-        return True
-
-
-class CharacterDialog(QDialog):
-    """Add or edit a character: a name and the voice mix it speaks with."""
-
-    def __init__(
-        self,
-        voices: list[str],
-        settings_fn: Callable[[], AppSettings],
-        nam: QNetworkAccessManager,
-        on_preview_active: Callable[[bool], None],
-        character: Character,
-        other_names: list[str],
-        editing: bool = False,
-        parent: QWidget | None = None,
-    ) -> None:
-        super().__init__(parent)
-        self.setWindowTitle("Edit Character" if editing else "Add Character")
-        self.setMinimumWidth(360)
-        self._other_names = other_names
-
-        self.name_edit = QLineEdit(character.name)
-        self.name_edit.setPlaceholderText("e.g. narrator")
-        form = QFormLayout()
-        form.addRow("Character:", self.name_edit)
-
-        # Voices are optional so characters can be jotted down quickly and
-        # given voices later.
-        self.voice_mix = VoiceMixWidget(
-            settings_fn, nam, on_preview_active, require_first=False
-        )
-        self.voice_mix.set_choices(voices)
-        self.voice_mix.set_mix(*parse_voice_string(character.voice))
-
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok
-            | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-
-        layout = QVBoxLayout(self)
-        layout.addLayout(form)
-        layout.addWidget(self.voice_mix)
-        layout.addWidget(buttons)
-
-    def character(self) -> Character:
-        return Character(
-            self.name_edit.text().strip(), self.voice_mix.voice_string()
-        )
-
-    def accept(self) -> None:
-        error = name_error(self.character().name, self._other_names)
-        if error:
-            QMessageBox.warning(self, "Invalid name", error)
-            self.name_edit.setFocus()
-            return
-        super().accept()
-
-
-class PanelWidget(QWidget):
-    """Collapsible side panel listing the characters, with Add/Remove buttons.
-
-    The character list is the source of truth; the table only displays it.
-    """
-
-    COLLAPSED_WIDTH = 30
-    EXPANDED_WIDTH = 220
-
-    characters_changed = Signal()
-
-    def __init__(
-        self,
-        settings: AppSettings,
-        nam: QNetworkAccessManager,
-        on_preview_active: Callable[[bool], None],
-        parent: QWidget | None = None,
-    ) -> None:
-        super().__init__(parent)
-        self.setFixedWidth(self.EXPANDED_WIDTH)
-        self._settings = settings
-        self._nam = nam
-        self._on_preview_active = on_preview_active
-
-        self._collapsed = True
-        self._characters: list[Character] = []
-        self._voices: list[str] = []
-        self._reply: QNetworkReply | None = None
-
-        # Main layout
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-
-        # Toggle button (top-right, always visible)
-        style = self.style()
-        self.toggle_btn = QPushButton()
-        self.toggle_btn.setFlat(True)
-        self.toggle_btn.setFixedWidth(24)
-        self.toggle_btn.setIcon(
-            style.standardIcon(QStyle.StandardPixmap.SP_ArrowRight)
-        )
-        self.toggle_btn.clicked.connect(self._toggle)
-        layout.addWidget(
-            self.toggle_btn,
-            0,
-            Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight,
-        )
-
-        # Collapsible content
-        self.content = QWidget()
-        content_layout = QVBoxLayout(self.content)
-        content_layout.setContentsMargins(9, 6, 9, 6)
-
-        # Header label
-        self.title_label = QLabel("Characters")
-        self.title_label.setStyleSheet("font-weight: bold;")
-        content_layout.addWidget(self.title_label)
-
-        # Body — table of characters
-        self.table = QTableWidget(0, 2)
-        self.table.setHorizontalHeaderLabels(["Character", "Voice"])
-        # Name column fits its widest cell; the voice column takes the rest.
-        self.table.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.ResizeMode.ResizeToContents
-        )
-        self.table.horizontalHeader().setSectionResizeMode(
-            1, QHeaderView.ResizeMode.Stretch
-        )
-        self.table.setSelectionBehavior(
-            QTableWidget.SelectionBehavior.SelectRows
-        )
-        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.table.horizontalHeader().setVisible(False)
-        self.table.verticalHeader().setVisible(False)
-        self.table.cellDoubleClicked.connect(self._on_cell_double_clicked)
-        # Voice column: wrap and ellipsize text
-        self.table.setItemDelegateForColumn(1, _VoiceItemDelegate(self.table))
-        content_layout.addWidget(self.table, 1)
-
-        # Footer buttons
-        button_row = QHBoxLayout()
-        self.add_btn = QPushButton("Add")
-        self.add_btn.setIcon(
-            style.standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton)
-        )
-        self.remove_btn = QPushButton("Remove")
-        self.remove_btn.setIcon(
-            style.standardIcon(QStyle.StandardPixmap.SP_DialogCloseButton)
-        )
-        button_row.addWidget(self.add_btn)
-        button_row.addWidget(self.remove_btn)
-        self.add_btn.clicked.connect(self._on_add)
-        self.remove_btn.clicked.connect(self._on_remove)
-        # Enter key on the panel opens the editor for the selected row
-        self._enter_action = QAction(self)
-        self._enter_action.setShortcut(Qt.Key.Key_Return)
-        self._enter_action.triggered.connect(self._on_enter)
-        self.addAction(self._enter_action)
-        content_layout.addLayout(button_row)
-
-        layout.addWidget(self.content)
-        self._set_collapsed(True)
-        # Fetch voices on startup so they're cached for the Add dialog
-        self._fetch_voices()
-
-    def _toggle(self) -> None:
-        self._set_collapsed(not self._collapsed)
-
-    def _set_collapsed(self, collapsed: bool) -> None:
-        self._collapsed = collapsed
-        self.content.setVisible(not collapsed)
-        self.toggle_btn.setIcon(
-            self.style().standardIcon(
-                QStyle.StandardPixmap.SP_ArrowRight
-                if collapsed
-                else QStyle.StandardPixmap.SP_ArrowLeft
-            )
-        )
-        self.setFixedWidth(
-            self.COLLAPSED_WIDTH if collapsed else self.EXPANDED_WIDTH
-        )
-
-    # -- characters --------------------------------------------------------- #
-    def characters(self) -> list[Character]:
-        return list(self._characters)
-
-    def voice_aliases(self) -> dict[str, str]:
-        return voice_aliases(self._characters)
-
-    def selected_character(self) -> Character | None:
-        row = self.table.currentRow()
-        if 0 <= row < len(self._characters):
-            return self._characters[row]
-        return None
-
-    def _refresh_table(self) -> None:
-        self.table.setRowCount(len(self._characters))
-        for row, character in enumerate(self._characters):
-            for column, text in enumerate((character.name, character.voice)):
-                item = QTableWidgetItem(text)
-                item.setTextAlignment(
-                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
-                )
-                self.table.setItem(row, column, item)
-        self.table.resizeRowsToContents()
-
-    def set_settings(self, settings: AppSettings) -> None:
-        # Refetch for a new server, or retry if the last attempt failed.
-        retry = not self._voices and self._reply is None
-        refetch = settings.base_url != self._settings.base_url
-        self._settings = settings
-        if refetch or retry:
-            self._fetch_voices()
-
-    def _fetch_voices(self) -> None:
-        self._cancel_fetch()
-        reply = self._nam.get(voices_request(self._settings.base_url))
-        self._reply = reply
-        reply.finished.connect(lambda r=reply: self._on_voices(r))
-
-    def _cancel_fetch(self) -> None:
-        reply, self._reply = self._reply, None
-        if reply is not None:
-            reply.abort()
-
-    def _on_voices(self, reply: QNetworkReply) -> None:
-        reply.deleteLater()
-        if reply is not self._reply:  # cancelled or superseded
-            return
-        self._reply = None
-        if reply.error() != QNetworkReply.NetworkError.NoError:
-            return
-        try:
-            self._voices = extract_voice_names(
-                json.loads(reply.readAll().data())
-            )
-        except (ValueError, TypeError, AttributeError):
-            pass
-
-    def _on_cell_double_clicked(self, row: int, _column: int) -> None:
-        self._edit_row(row)
-
-    def _on_enter(self) -> None:
-        row = self.table.currentRow()
-        if row < 0:
-            return
-        self._edit_row(row)
-
-    def _edit_row(self, row: int) -> None:
-        if 0 <= row < len(self._characters):
-            self._open_character_dialog(row)
-
-    def _on_add(self) -> None:
-        self._open_character_dialog()
-
-    def _open_character_dialog(self, editing_row: int = -1) -> None:
-        editing = editing_row >= 0
-        dialog = CharacterDialog(
-            self._voices,
-            lambda: self._settings,
-            self._nam,
-            self._on_preview_active,
-            self._characters[editing_row] if editing else Character(""),
-            [
-                c.name
-                for i, c in enumerate(self._characters)
-                if i != editing_row
-            ],
-            editing=editing,
-            parent=self,
-        )
-        accepted = dialog.exec() == QDialog.DialogCode.Accepted
-        character = dialog.character()
-        dialog.deleteLater()
-        if not accepted:
-            return
-        if editing:
-            row = editing_row
-            self._characters[row] = character
-        else:
-            row = len(self._characters)
-            self._characters.append(character)
-        self._refresh_table()
-        self.table.selectRow(row)
-        self.characters_changed.emit()
-
-    def _on_remove(self) -> None:
-        character = self.selected_character()
-        if character is None:
-            return
-        answer = QMessageBox.question(
-            self,
-            "Remove Character",
-            f"Remove {character.name}?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if answer == QMessageBox.StandardButton.Yes:
-            self._characters.remove(character)
-            self._refresh_table()
-            self.characters_changed.emit()
 
 
 class MainWindow(QMainWindow):
@@ -1067,7 +692,7 @@ class MainWindow(QMainWindow):
         self._refresh_ui()
 
     def closeEvent(self, event) -> None:
-        if not self.maybe_save():
+        if not self.maybe_save() or not self.panel.maybe_save_cast():
             event.ignore()
             return
         save_window_geometry(self.saveGeometry())

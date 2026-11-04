@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 
 from PySide6.QtCore import QByteArray, QSettings, QUrl
 from PySide6.QtGui import QFont, QGuiApplication
 from PySide6.QtNetwork import QNetworkRequest
+
+from kokoro_editor.characters import Character
 
 VOICE_SLOTS = 3
 MAX_VOICE_WEIGHT = 10
@@ -174,6 +176,57 @@ def save_window_geometry(geometry: QByteArray) -> None:
     s = QSettings()
     s.setValue("window_geometry", geometry)
     s.sync()
+
+
+# -- casts: named character lists shared by all documents ------------------- #
+def load_casts() -> dict[str, list[Character]]:
+    """Saved casts by name, in the order they were first saved."""
+    try:
+        data = json.loads(QSettings().value("casts", "[]", type=str))
+    except ValueError:
+        return {}
+    casts: dict[str, list[Character]] = {}
+    for cast in data if isinstance(data, list) else []:
+        if not isinstance(cast, dict) or not cast.get("name"):
+            continue
+        casts[str(cast["name"])] = [
+            Character(str(c["name"]), str(c.get("voice", "")))
+            for c in cast.get("characters", [])
+            if isinstance(c, dict) and c.get("name")
+        ]
+    return casts
+
+
+def save_casts(casts: dict[str, list[Character]]) -> None:
+    data = [
+        {"name": name, "characters": [asdict(c) for c in characters]}
+        for name, characters in casts.items()
+    ]
+    s = QSettings()
+    s.setValue("casts", json.dumps(data))
+    s.sync()
+
+
+# Each change re-reads the saved casts so other running instances' casts
+# aren't overwritten.
+def save_cast(name: str, characters: list[Character]) -> None:
+    casts = load_casts()
+    casts[name] = list(characters)
+    save_casts(casts)
+
+
+def delete_cast(name: str) -> None:
+    casts = load_casts()
+    casts.pop(name, None)
+    save_casts(casts)
+
+
+def load_last_cast() -> str:
+    return QSettings().value("last_cast", "", type=str)
+
+
+def save_last_cast(name: str) -> None:
+    QSettings().setValue("last_cast", name)
 
 
 def speech_payload(
