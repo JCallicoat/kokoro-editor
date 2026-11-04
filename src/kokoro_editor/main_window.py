@@ -13,6 +13,7 @@ from PySide6.QtCore import (
     Qt,
     QSize,
     QTimer,
+    Signal,
 )
 from PySide6.QtGui import QAction, QCursor, QKeySequence, QPainter
 from PySide6.QtNetwork import (
@@ -47,6 +48,13 @@ from PySide6.QtWidgets import (
 
 from kokoro_editor import audio
 from kokoro_editor.audio import PCMPlayer
+from kokoro_editor.characters import (
+    Character,
+    name_error,
+    unvoiced_tag_names,
+    voice_aliases,
+    voice_tag,
+)
 from kokoro_editor.render_dialog import RenderDialog
 from kokoro_editor.settings import (
     REQUEST_INACTIVITY_TIMEOUT_MS,
@@ -139,16 +147,18 @@ class CharacterDialog(QDialog):
         settings_fn: Callable[[], AppSettings],
         nam: QNetworkAccessManager,
         on_preview_active: Callable[[bool], None],
-        name: str = "",
-        voice_string: str = "",
+        character: Character,
+        other_names: list[str],
         editing: bool = False,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Edit Character" if editing else "Add Character")
         self.setMinimumWidth(360)
+        self._other_names = other_names
 
-        self.name_edit = QLineEdit(name)
+        self.name_edit = QLineEdit(character.name)
+        self.name_edit.setPlaceholderText("e.g. narrator")
         form = QFormLayout()
         form.addRow("Character:", self.name_edit)
 
@@ -158,7 +168,7 @@ class CharacterDialog(QDialog):
             settings_fn, nam, on_preview_active, require_first=False
         )
         self.voice_mix.set_choices(voices)
-        self.voice_mix.set_mix(*parse_voice_string(voice_string))
+        self.voice_mix.set_mix(*parse_voice_string(character.voice))
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
@@ -172,12 +182,30 @@ class CharacterDialog(QDialog):
         layout.addWidget(self.voice_mix)
         layout.addWidget(buttons)
 
+    def character(self) -> Character:
+        return Character(
+            self.name_edit.text().strip(), self.voice_mix.voice_string()
+        )
+
+    def accept(self) -> None:
+        error = name_error(self.character().name, self._other_names)
+        if error:
+            QMessageBox.warning(self, "Invalid name", error)
+            self.name_edit.setFocus()
+            return
+        super().accept()
+
 
 class PanelWidget(QWidget):
-    """Collapsible side panel with a Characters label and Add/Remove buttons."""
+    """Collapsible side panel listing the characters, with Add/Remove buttons.
+
+    The character list is the source of truth; the table only displays it.
+    """
 
     COLLAPSED_WIDTH = 30
     EXPANDED_WIDTH = 220
+
+    characters_changed = Signal()
 
     def __init__(
         self,
@@ -193,6 +221,7 @@ class PanelWidget(QWidget):
         self._on_preview_active = on_preview_active
 
         self._collapsed = True
+        self._characters: list[Character] = []
         self._voices: list[str] = []
         self._reply: QNetworkReply | None = None
 
@@ -242,7 +271,6 @@ class PanelWidget(QWidget):
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.horizontalHeader().setVisible(False)
         self.table.verticalHeader().setVisible(False)
-        self.table.cellChanged.connect(self._on_cell_changed)
         self.table.cellDoubleClicked.connect(self._on_cell_double_clicked)
         # Voice column: wrap and ellipsize text
         self.table.setItemDelegateForColumn(1, _VoiceItemDelegate(self.table))
@@ -291,6 +319,30 @@ class PanelWidget(QWidget):
             self.COLLAPSED_WIDTH if collapsed else self.EXPANDED_WIDTH
         )
 
+    # -- characters --------------------------------------------------------- #
+    def characters(self) -> list[Character]:
+        return list(self._characters)
+
+    def voice_aliases(self) -> dict[str, str]:
+        return voice_aliases(self._characters)
+
+    def selected_character(self) -> Character | None:
+        row = self.table.currentRow()
+        if 0 <= row < len(self._characters):
+            return self._characters[row]
+        return None
+
+    def _refresh_table(self) -> None:
+        self.table.setRowCount(len(self._characters))
+        for row, character in enumerate(self._characters):
+            for column, text in enumerate((character.name, character.voice)):
+                item = QTableWidgetItem(text)
+                item.setTextAlignment(
+                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+                )
+                self.table.setItem(row, column, item)
+        self.table.resizeRowsToContents()
+
     def set_settings(self, settings: AppSettings) -> None:
         # Refetch for a new server, or retry if the last attempt failed.
         retry = not self._voices and self._reply is None
@@ -334,75 +386,58 @@ class PanelWidget(QWidget):
         self._edit_row(row)
 
     def _edit_row(self, row: int) -> None:
-        name_item = self.table.item(row, 0)
-        voice_item = self.table.item(row, 1)
-        self._open_character_dialog(
-            row,
-            name_item.text() if name_item else "",
-            voice_item.text() if voice_item else "",
-        )
+        if 0 <= row < len(self._characters):
+            self._open_character_dialog(row)
 
     def _on_add(self) -> None:
         self._open_character_dialog()
 
-    def _open_character_dialog(
-        self,
-        editing_row: int = -1,
-        initial_name: str = "",
-        initial_voice: str = "",
-    ) -> None:
+    def _open_character_dialog(self, editing_row: int = -1) -> None:
+        editing = editing_row >= 0
         dialog = CharacterDialog(
             self._voices,
             lambda: self._settings,
             self._nam,
             self._on_preview_active,
-            initial_name,
-            initial_voice,
-            editing=editing_row >= 0,
+            self._characters[editing_row] if editing else Character(""),
+            [
+                c.name
+                for i, c in enumerate(self._characters)
+                if i != editing_row
+            ],
+            editing=editing,
             parent=self,
         )
         accepted = dialog.exec() == QDialog.DialogCode.Accepted
-        name = dialog.name_edit.text().strip()
-        voice_str = dialog.voice_mix.voice_string()
+        character = dialog.character()
         dialog.deleteLater()
-        if not accepted or not name:
+        if not accepted:
             return
-        row = editing_row
-        if row < 0:
-            row = self.table.rowCount()
-            self.table.insertRow(row)
-        self.table.setItem(row, 0, QTableWidgetItem(name))
-        self.table.setItem(row, 1, QTableWidgetItem(voice_str))
-        self.table.resizeRowsToContents()
-        self.table.scrollToBottom()
+        if editing:
+            row = editing_row
+            self._characters[row] = character
+        else:
+            row = len(self._characters)
+            self._characters.append(character)
+        self._refresh_table()
+        self.table.selectRow(row)
+        self.characters_changed.emit()
 
     def _on_remove(self) -> None:
-        current = self.table.currentRow()
-        if current < 0:
+        character = self.selected_character()
+        if character is None:
             return
         answer = QMessageBox.question(
             self,
             "Remove Character",
-            "Remove this character?",
+            f"Remove {character.name}?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
         if answer == QMessageBox.StandardButton.Yes:
-            self.table.removeRow(current)
-            self.table.resizeRowsToContents()
-
-    def _on_cell_changed(self, row: int, _column: int) -> None:
-        self.table.resizeRowsToContents()
-        item = self.table.item(row, 0)
-        if item:
-            item.setTextAlignment(
-                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
-            )
-        item = self.table.item(row, 1)
-        if item:
-            item.setTextAlignment(
-                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
-            )
+            self._characters.remove(character)
+            self._refresh_table()
+            self.characters_changed.emit()
 
 
 class MainWindow(QMainWindow):
@@ -817,10 +852,41 @@ class MainWindow(QMainWindow):
         if not text:
             self.status_label.setText("Nothing to speak.")
             return False
+        # The server rejects the whole request over a tag it can't resolve.
+        unvoiced = unvoiced_tag_names(text, self.panel.characters())
+        if unvoiced:
+            QMessageBox.warning(
+                self,
+                "Characters without voices",
+                "Choose a voice for these characters before speaking:\n\n"
+                + ", ".join(unvoiced),
+            )
+            return False
         if not self.settings.voice_string:
             self.status_label.setText("Choose a voice first.")
             self._open_settings()
         return bool(self.settings.voice_string)
+
+    def insert_voice_tag(self, character: Character) -> None:
+        """Insert character's [voice:...] tag at the cursor (the start of
+        any selection), spaced off from the words around it. Every way of
+        inserting a character tag goes through here."""
+        cursor = self.text_edit.textCursor()
+        position = cursor.selectionStart()
+        cursor.setPosition(position)
+        document = self.text_edit.document()
+        before = document.characterAt(position - 1) if position > 0 else ""
+        after = document.characterAt(position)
+        tag = voice_tag(character.name)
+        if before and not before.isspace():
+            tag = " " + tag
+        # At a line or document end, after is U+2029, which still wants a
+        # space so typing can carry on after the tag.
+        if after not in (" ", "\t"):
+            tag += " "
+        cursor.insertText(tag)
+        self.text_edit.setTextCursor(cursor)
+        self.text_edit.setFocus()
 
     def _on_render_clicked(self) -> None:
         text = self._text_to_speak()
@@ -837,6 +903,7 @@ class MainWindow(QMainWindow):
             os.path.join(directory, stem),
             selection,
             self._nam,
+            self.panel.voice_aliases(),
             self,
         )
         if dialog.exec() == QDialog.DialogCode.Accepted:
@@ -876,7 +943,13 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Could not open audio device", str(exc))
             return
 
-        payload = speech_payload(s, text, "pcm", stream=True)
+        payload = speech_payload(
+            s,
+            text,
+            "pcm",
+            stream=True,
+            voice_aliases=self.panel.voice_aliases(),
+        )
         request = speech_request(s.base_url, REQUEST_INACTIVITY_TIMEOUT_MS)
         reply = self._nam.post(
             request, QByteArray(json.dumps(payload).encode("utf-8"))

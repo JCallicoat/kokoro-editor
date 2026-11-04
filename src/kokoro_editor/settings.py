@@ -182,6 +182,7 @@ def speech_payload(
     response_format: str,
     stream: bool,
     voice: str | None = None,
+    voice_aliases: dict[str, str] | None = None,
 ) -> dict:
     """JSON body for /v1/audio/speech, shared by playback and rendering."""
     payload = {
@@ -196,6 +197,8 @@ def speech_payload(
     }
     if settings.ssml:
         payload["ssml"] = True
+    if voice_aliases:
+        payload["voice_aliases"] = voice_aliases
     return payload
 
 

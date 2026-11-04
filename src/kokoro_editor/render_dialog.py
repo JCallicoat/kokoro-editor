@@ -65,6 +65,7 @@ class RenderDialog(QDialog):
         base_path: str,
         selection: bool,
         nam: QNetworkAccessManager,
+        voice_aliases: dict[str, str],
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -72,6 +73,7 @@ class RenderDialog(QDialog):
         self.setMinimumWidth(520)
         self._settings = settings
         self._text = text
+        self._voice_aliases = voice_aliases
         # Use the caller's long-lived manager: destroying a QNetworkAccessManager
         # along with this dialog right after a POST crashes Qt.
         self._nam = nam
@@ -180,7 +182,11 @@ class RenderDialog(QDialog):
                 return
 
         payload = speech_payload(
-            self._settings, self._text, self._format(), stream=False
+            self._settings,
+            self._text,
+            self._format(),
+            stream=False,
+            voice_aliases=self._voice_aliases,
         )
         request = speech_request(
             self._settings.base_url, RENDER_INACTIVITY_TIMEOUT_MS
