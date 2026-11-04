@@ -310,28 +310,32 @@ class PanelWidget(QWidget):
         reply.deleteLater()
 
     def _on_cell_double_clicked(self, row: int, _column: int) -> None:
-        self._editing_row = row
-        name_item = self.table.item(row, 0)
-        voice_item = self.table.item(row, 1)
-        self._edit_name = name_item.text() if name_item else ""
-        self._edit_voice = voice_item.text() if voice_item else ""
-        self._on_add()
+        self._edit_row(row)
 
     def _on_enter(self) -> None:
         row = self.table.currentRow()
         if row < 0:
             return
-        self._editing_row = row
+        self._edit_row(row)
+
+    def _edit_row(self, row: int) -> None:
         name_item = self.table.item(row, 0)
         voice_item = self.table.item(row, 1)
-        self._edit_name = name_item.text() if name_item else ""
-        self._edit_voice = voice_item.text() if voice_item else ""
-        self._on_add()
+        self._open_character_dialog(
+            row,
+            name_item.text() if name_item else "",
+            voice_item.text() if voice_item else "",
+        )
 
     def _on_add(self) -> None:
-        editing_row = getattr(self, "_editing_row", -1)
-        initial_name = getattr(self, "_edit_name", "")
-        initial_voice = getattr(self, "_edit_voice", "")
+        self._open_character_dialog()
+
+    def _open_character_dialog(
+        self,
+        editing_row: int = -1,
+        initial_name: str = "",
+        initial_voice: str = "",
+    ) -> None:
         dialog = QDialog(self)
         dialog.setWindowTitle(
             "Edit Character" if editing_row >= 0 else "Add Character"
@@ -433,7 +437,6 @@ class PanelWidget(QWidget):
                 self.table.setItem(row, 1, QTableWidgetItem(voice_str))
             self.table.resizeRowsToContents()
             self.table.scrollToBottom()
-            self._editing_row = -1
 
     def _update_dialog_voice_string(self) -> None:
         voices = [b.currentData() or "" for b in self._voice_boxes]
