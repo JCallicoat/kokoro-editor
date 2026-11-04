@@ -229,8 +229,9 @@ class PanelWidget(QWidget):
         # Body — table of characters
         self.table = QTableWidget(0, 2)
         self.table.setHorizontalHeaderLabels(["Character", "Voice"])
+        # Name column fits its widest cell; the voice column takes the rest.
         self.table.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.ResizeMode.Stretch
+            0, QHeaderView.ResizeMode.ResizeToContents
         )
         self.table.horizontalHeader().setSectionResizeMode(
             1, QHeaderView.ResizeMode.Stretch
