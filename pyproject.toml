@@ -21,11 +21,21 @@ classifiers = [
     "Topic :: Text Editors",
 ]
 
+[dependency-groups]
+test = ["pytest>=8"]
+
 [project.gui-scripts]
 kokoro-editor = "kokoro_editor.app:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/kokoro_editor"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.coverage.run]
+source = ["kokoro_editor"]
 
 [tool.ruff]
 line-length = 79
