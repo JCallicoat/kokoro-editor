@@ -15,7 +15,11 @@ from kokoro_editor.casts_tab import (
     ConflictDialog,
     InsertCharactersDialog,
 )
-from kokoro_editor.characters import Character, cast_to_json
+from kokoro_editor.characters import (
+    Character,
+    cast_to_json,
+    character_colors,
+)
 from kokoro_editor.characters_panel import PanelWidget
 from kokoro_editor.settings import (
     AppSettings,
@@ -231,7 +235,13 @@ def test_import_with_no_casts_makes_one(
     path.write_text(json.dumps(cast_to_json(saga)))
     choose_files(monkeypatch, str(path))
     tab.import_btn.click()
-    assert load_casts() == {"heroes": saga}
+    # The file's colours (the originals' defaults) come along explicitly.
+    colors = character_colors(saga)
+    assert load_casts() == {
+        "heroes": [
+            Character(c.name, c.voice, c.rate, colors[c.name]) for c in saga
+        ]
+    }
     assert tab._selected() == "heroes"
 
 

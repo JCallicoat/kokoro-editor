@@ -8,6 +8,8 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 
+from kokoro_editor.colors import is_color, suggest_color
+
 # Kokoro-FastAPI's web UI only imports cast names of this form, so sticking
 # to it keeps the two interchangeable (its cast files are voice_aliases).
 NAME_PATTERN = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_-]{0,23}")
@@ -16,6 +18,9 @@ VOICE_TAG_PATTERN = re.compile(
     r"\[voice:\s*([a-zA-Z0-9_][a-zA-Z0-9_+\-(). ]*?)\s*\]", re.IGNORECASE
 )
 
+
+# Cast files keep what only this app uses (colours) under this key.
+CAST_FILE_KEY = "kokoro_editor"
 
 # Drag and drop format carrying a character's name, so the editor can
 # insert its tag the same way the shortcuts do.
@@ -33,6 +38,9 @@ class Character:
     # Multiplies the request speed whenever the character speaks. The server
     # reapplies it at each of the character's [voice:] tags.
     rate: float = 1.0
+    # Its tags' background in the editor, "#rrggbb"; "" for a default
+    # (see character_colors).
+    color: str = ""
 
     def alias_value(self) -> str | dict:
         """The character's voice_aliases entry: the plain mix, or the mix
@@ -87,6 +95,19 @@ def voice_aliases(characters: list[Character]) -> dict[str, str | dict]:
     return {c.name: c.alias_value() for c in characters if c.voice}
 
 
+def character_colors(characters: list[Character]) -> dict[str, str]:
+    """Each character's colour by name (casefolded): its own, or a default
+    chosen from its name and the colours before it, so it's the same every
+    time the cast is shown."""
+    colors: dict[str, str] = {}
+    for character in characters:
+        color = character.color
+        if not is_color(color):
+            color = suggest_color(list(colors.values()), seed=character.name)
+        colors[character.name.casefold()] = color
+    return colors
+
+
 def cast_name_error(name: str, other_names: list[str]) -> str | None:
     """Why name can't be used for a cast, or None if it can."""
     if not name:
@@ -102,8 +123,15 @@ def cast_name_error(name: str, other_names: list[str]) -> str | None:
 def cast_to_json(characters: list[Character]) -> dict:
     """A cast file's contents. Unlike requests, characters without a voice
     are kept (with an empty mix) so they survive a round trip; the web UI
-    skips them."""
-    return {"voice_aliases": {c.name: c.alias_value() for c in characters}}
+    skips them. Colours go under a key of their own, which the web UI
+    ignores, so voice_aliases stays exactly in its format."""
+    colors = character_colors(characters)
+    return {
+        "voice_aliases": {c.name: c.alias_value() for c in characters},
+        CAST_FILE_KEY: {
+            "colors": {c.name: colors[c.name.casefold()] for c in characters}
+        },
+    }
 
 
 def characters_from_json(data) -> tuple[list[Character], list[str]]:
@@ -137,6 +165,13 @@ def characters_from_json(data) -> tuple[list[Character], list[str]]:
             skipped.append(name)
             continue
         characters.append(Character(name, voice, rate))
+    if isinstance(data, dict) and isinstance(data.get(CAST_FILE_KEY), dict):
+        colors = data[CAST_FILE_KEY].get("colors")
+        if isinstance(colors, dict):
+            for character in characters:
+                color = colors.get(character.name)
+                if is_color(color):
+                    character.color = color.lower()
     return characters, skipped
 
 

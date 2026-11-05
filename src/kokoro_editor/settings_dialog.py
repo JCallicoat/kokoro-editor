@@ -32,11 +32,13 @@ from kokoro_editor.characters_panel import PanelWidget
 from kokoro_editor.settings import (
     MAX_FONT_SIZE,
     MIN_FONT_SIZE,
+    TAG_COLOR_KEYS,
     AppSettings,
     extract_voice_names,
     voices_request,
 )
 from kokoro_editor.voice_mix import VoiceMixWidget
+from kokoro_editor.widgets import ColorButton
 
 
 class SettingsDialog(QDialog):
@@ -114,12 +116,35 @@ class SettingsDialog(QDialog):
         editor_layout = QVBoxLayout(editor_group)
         editor_layout.addWidget(self.restore_check)
 
+        # Characters have their own colours, set with each character.
+        self.tag_color_buttons = {
+            key: ColorButton(getattr(settings, key)) for key in TAG_COLOR_KEYS
+        }
+        colors_group = QGroupBox("Tag colours")
+        colors_form = QFormLayout(colors_group)
+        for key, label in (
+            ("pause_color", "Pauses"),
+            ("rate_color", "Rate changes"),
+            ("pronunciation_color", "Pronunciations"),
+            ("voice_mix_color", "Voice mixes (not characters)"),
+        ):
+            colors_form.addRow(label, self.tag_color_buttons[key])
+        reset = QPushButton("Reset to defaults")
+        reset.clicked.connect(self._reset_tag_colors)
+        colors_form.addRow(reset)
+
         tab = QWidget()
         layout = QVBoxLayout(tab)
         layout.addWidget(font_group)
         layout.addWidget(editor_group)
+        layout.addWidget(colors_group)
         layout.addStretch(1)
         return tab
+
+    def _reset_tag_colors(self) -> None:
+        defaults = AppSettings()
+        for key, button in self.tag_color_buttons.items():
+            button.set_color(getattr(defaults, key))
 
     def _build_kokoro_tab(
         self,
@@ -273,4 +298,8 @@ class SettingsDialog(QDialog):
             prebuffer_ms=self.prebuffer_spin.value(),
             scrub_step_s=self.scrub_spin.value(),
             restore_session=self.restore_check.isChecked(),
+            **{
+                key: button.color()
+                for key, button in self.tag_color_buttons.items()
+            },
         )

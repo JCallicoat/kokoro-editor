@@ -17,7 +17,7 @@ MAX_TOTAL_PAUSE_S = 300.0
 # Kokoro-FastAPI's text_processor.py, which decide what really is a tag.
 PAUSE_PATTERN = re.compile(r"\[pause:(\d+(?:\.\d+)?)s\]", re.IGNORECASE)
 RATE_PATTERN = re.compile(
-    r"\[(?:base)?rate:\s*(\d+(?:\.\d+)?)\s*\]", re.IGNORECASE
+    r"\[(base)?rate:\s*(?P<rate>\d+(?:\.\d+)?)\s*\]", re.IGNORECASE
 )
 PRONUNCIATION_PATTERN = re.compile(r"\[[^\[\]]*?\]\(\/[^\/\(\)]*?\/\)")
 
@@ -107,7 +107,7 @@ def _check_tag(tag: str, keyword: str) -> str | None:
     if match is None:
         suggestion = f"[{keyword}:{number.group()}]" if number else None
         return _read_aloud(tag, "rate change", suggestion)
-    if not MIN_RATE <= float(match.group(1)) <= MAX_RATE:
+    if not MIN_RATE <= float(match.group("rate")) <= MAX_RATE:
         return (
             f"{tag} is outside the rates the server allows, so it's kept "
             f"within {MIN_RATE:g}–{MAX_RATE:g}×."
@@ -153,3 +153,82 @@ def pause_budget_error(text: str) -> str | None:
         f"{MAX_TOTAL_PAUSE_S:g} the server allows in one request, so it "
         "would refuse it."
     )
+
+
+# -- finding tags ---------------------------------------------------------- #
+@dataclass
+class TagSpan:
+    """A complete tag in a piece of text. start and end are string
+    indices; nothing is assumed about the text around the tag."""
+
+    start: int
+    end: int
+    kind: str  # "voice", "pause", "rate", "baserate" or "pronunciation"
+    value: str  # voice name, seconds, rate, or the word pronounced
+    ipa: str = ""  # for pronunciations
+
+    @property
+    def text_length(self) -> int:
+        return self.end - self.start
+
+
+def find_tags(text: str) -> list[TagSpan]:
+    """Every tag the server recognises in text, in order. Where one match
+    lies inside another (a pronunciation of "[voice:x]"), the longer
+    wins."""
+    found = [
+        TagSpan(m.start(), m.end(), "voice", m.group(1).strip())
+        for m in VOICE_TAG_PATTERN.finditer(text)
+    ]
+    found += [
+        TagSpan(m.start(), m.end(), "pause", m.group(1))
+        for m in PAUSE_PATTERN.finditer(text)
+    ]
+    found += [
+        TagSpan(
+            m.start(),
+            m.end(),
+            "baserate" if m.group(1) else "rate",
+            m.group("rate"),
+        )
+        for m in RATE_PATTERN.finditer(text)
+    ]
+    found += [
+        TagSpan(
+            m.start(),
+            m.end(),
+            "pronunciation",
+            m.group(0)[1 : m.group(0).index("]")],
+            m.group(0)[m.group(0).index("](/") + 3 : -2],
+        )
+        for m in PRONUNCIATION_PATTERN.finditer(text)
+    ]
+    tags: list[TagSpan] = []
+    for tag in sorted(found, key=lambda t: (t.start, -t.text_length)):
+        if tags and tag.start < tags[-1].end:
+            continue  # inside the previous, longer tag
+        tags.append(tag)
+    return tags
+
+
+def tag_at(text: str, index: int) -> TagSpan | None:
+    """The tag covering the character at index, if any."""
+    for tag in find_tags(text):
+        if tag.start <= index < tag.end:
+            return tag
+    return None
+
+
+# Qt counts text positions in UTF-16 code units, which differ from Python's
+# string indices once a character lies beyond U+FFFF (most emoji).
+def utf16_index(text: str, index: int) -> int:
+    return len(text[:index].encode("utf-16-le")) // 2
+
+
+def string_index(text: str, utf16: int) -> int:
+    units = 0
+    for index, char in enumerate(text):
+        if units >= utf16:
+            return index
+        units += 2 if ord(char) > 0xFFFF else 1
+    return len(text)

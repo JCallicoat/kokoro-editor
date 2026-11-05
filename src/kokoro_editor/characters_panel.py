@@ -13,17 +13,25 @@ from PySide6.QtCore import (
     QModelIndex,
     QObject,
     QPersistentModelIndex,
+    QRect,
     QSize,
     Qt,
     Signal,
 )
-from PySide6.QtGui import QAction, QCursor, QGuiApplication, QPainter
+from PySide6.QtGui import (
+    QAction,
+    QColor,
+    QCursor,
+    QGuiApplication,
+    QPainter,
+)
 from PySide6.QtNetwork import (
     QNetworkAccessManager,
     QNetworkReply,
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -54,11 +62,13 @@ from kokoro_editor.characters import (
     MIN_RATE,
     Character,
     cast_name_error,
+    character_colors,
     clamp_rate,
     name_error,
     voice_aliases,
     voice_tag,
 )
+from kokoro_editor.colors import suggest_color
 from kokoro_editor.settings import (
     AppSettings,
     delete_cast,
@@ -72,6 +82,14 @@ from kokoro_editor.settings import (
     voices_request,
 )
 from kokoro_editor.voice_mix import VoiceMixWidget
+from kokoro_editor.widgets import ColorButton
+
+# Space between the voice column's text and its cell edges.
+VOICE_PADDING = 4
+
+
+def _padded(rect: QRect) -> QRect:
+    return rect.adjusted(VOICE_PADDING, 0, -VOICE_PADDING, 0)
 
 
 class _VoiceItemDelegate(QStyledItemDelegate):
@@ -95,7 +113,7 @@ class _VoiceItemDelegate(QStyledItemDelegate):
         # Draw wrapped text, replacing + with newlines for display
         text = index.data(Qt.ItemDataRole.DisplayRole) or ""
         display_text = text.replace("+", "\n")
-        rect = option.rect
+        rect = _padded(option.rect)
         # Draw text with word wrap, centered vertically
         flags = (
             Qt.AlignmentFlag.AlignLeft
@@ -113,8 +131,10 @@ class _VoiceItemDelegate(QStyledItemDelegate):
         display_text = text.replace("+", "\n")
         # Calculate wrapped height
         font_metrics = option.fontMetrics
+        # Measured in the padded width it's drawn in, so wrapped lines
+        # aren't clipped.
         rect = font_metrics.boundingRect(
-            option.rect,
+            _padded(option.rect),
             int(Qt.AlignmentFlag.AlignLeft | Qt.TextFlag.TextWordWrap),
             display_text,
         )
@@ -246,8 +266,12 @@ class _RateSpinBox(QDoubleSpinBox):
 
 
 class CharacterDialog(QDialog):
-    """Add or edit a character: a name, the voice mix it speaks with and
-    its rate."""
+    """Add or edit a character: a name, the voice mix it speaks with, its
+    rate, and the colour of its tags.
+
+    A new character gets a colour unlike other_colors. One still on its
+    default colour (default_color) keeps it as a default unless changed.
+    """
 
     def __init__(
         self,
@@ -259,11 +283,21 @@ class CharacterDialog(QDialog):
         other_names: list[str],
         editing: bool = False,
         parent: QWidget | None = None,
+        other_colors: list[str] | None = None,
+        default_color: str = "",
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Edit Character" if editing else "Add Character")
         self.setMinimumWidth(360)
         self._other_names = other_names
+        self._other_colors = other_colors or []
+        # A colour of its own is kept; so is a default, unless changed.
+        if character.color:
+            color, self._own_color = character.color, True
+        elif editing and default_color:
+            color, self._own_color = default_color, False
+        else:
+            color, self._own_color = suggest_color(self._other_colors), True
 
         self.name_edit = QLineEdit(character.name)
         self.name_edit.setPlaceholderText("e.g. narrator")
@@ -272,8 +306,24 @@ class CharacterDialog(QDialog):
 
         self.rate_spin = _RateSpinBox(lambda: settings_fn().speed)
         self.rate_spin.setValue(character.rate)
+        self.color_button = ColorButton(color)
+        self.color_button.setToolTip("The colour of its tags in the text")
+        self.color_button.color_changed.connect(self._on_color_changed)
+        another = QPushButton("↻")
+        another.setToolTip("Suggest another colour unlike the others")
+        another.setFixedWidth(32)
+        another.clicked.connect(
+            lambda: self.color_button.set_color(
+                suggest_color([*self._other_colors, self.color_button.color()])
+            )
+        )
+        color_row = QHBoxLayout()
+        color_row.addWidget(self.color_button)
+        color_row.addWidget(another)
+        color_row.addStretch(1)
         rate_form = QFormLayout()
         rate_form.addRow("Rate:", self.rate_spin)
+        rate_form.addRow("Colour:", color_row)
 
         # Voices are optional so characters can be jotted down quickly and
         # given voices later. The mix preview plays at the character's rate.
@@ -300,12 +350,16 @@ class CharacterDialog(QDialog):
         layout.addLayout(rate_form)
         layout.addWidget(buttons)
 
+    def _on_color_changed(self, _color: str) -> None:
+        self._own_color = True
+
     def character(self) -> Character:
         return Character(
             self.name_edit.text().strip(),
             self.voice_mix.voice_string(),
             # The spin box holds 2 decimals; round off float noise.
             round(self.rate_spin.value(), 2),
+            self.color_button.color() if self._own_color else "",
         )
 
     def accept(self) -> None:
@@ -326,7 +380,8 @@ class CharacterPickerDialog(QDialog):
     the caller to switch to that cast or import the character.
 
     accept_check(choice), if given, can refuse a pick to keep the dialog
-    open; message, ok_text and cancel_text adapt it to other uses.
+    open; message, ok_text, cancel_text and option_text (a checkbox, read
+    from option_check) adapt it to other uses.
     """
 
     def __init__(
@@ -339,6 +394,7 @@ class CharacterPickerDialog(QDialog):
         ok_text: str = "",
         cancel_text: str = "",
         accept_check: Callable[[tuple[str | None, str]], bool] | None = None,
+        option_text: str = "",
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle(title)
@@ -382,6 +438,10 @@ class CharacterPickerDialog(QDialog):
             layout.addWidget(label)
         layout.addLayout(form)
         layout.addWidget(self.character_list, 1)
+        # An optional choice for the caller, shown under the list.
+        self.option_check = QCheckBox(option_text)
+        self.option_check.setVisible(bool(option_text))
+        layout.addWidget(self.option_check)
         layout.addWidget(self.buttons)
 
         self.cast_box.currentIndexChanged.connect(self._fill)
@@ -630,6 +690,10 @@ class PanelWidget(QWidget):
     def characters(self) -> list[Character]:
         return list(self._characters)
 
+    def colors(self) -> dict[str, str]:
+        """Each character's tag colour, by casefolded name."""
+        return character_colors(self._characters)
+
     def voice_aliases(self) -> dict[str, str | dict]:
         return voice_aliases(self._characters)
 
@@ -641,6 +705,7 @@ class PanelWidget(QWidget):
 
     def _refresh_table(self) -> None:
         self.table.setRowCount(len(self._characters))
+        colors = self.colors()
         for row, character in enumerate(self._characters):
             for column, text in enumerate((character.name, character.voice)):
                 item = QTableWidgetItem(text)
@@ -649,6 +714,11 @@ class PanelWidget(QWidget):
                 )
                 # Either cell shows the whole character, rate included.
                 item.setToolTip(character.tooltip())
+                if column == 0:  # a swatch of its tag colour
+                    item.setData(
+                        Qt.ItemDataRole.DecorationRole,
+                        QColor(colors[character.name.casefold()]),
+                    )
                 self.table.setItem(row, column, item)
         self.table.resizeRowsToContents()
         self._update_move_buttons()
@@ -899,6 +969,8 @@ class PanelWidget(QWidget):
 
     def _open_character_dialog(self, editing_row: int = -1) -> None:
         editing = editing_row >= 0
+        colors = self.colors()
+        current = self._characters[editing_row] if editing else None
         dialog = CharacterDialog(
             self._voices,
             lambda: self._settings,
@@ -912,6 +984,12 @@ class PanelWidget(QWidget):
             ],
             editing=editing,
             parent=self,
+            other_colors=[
+                colors[c.name.casefold()]
+                for c in self._characters
+                if c is not current
+            ],
+            default_color=colors[current.name.casefold()] if current else "",
         )
         accepted = dialog.exec() == QDialog.DialogCode.Accepted
         character = dialog.character()

@@ -11,6 +11,13 @@ from PySide6.QtGui import QFont, QGuiApplication
 from PySide6.QtNetwork import QNetworkRequest
 
 from kokoro_editor.characters import Character, clamp_rate
+from kokoro_editor.colors import (
+    DEFAULT_PAUSE_COLOR,
+    DEFAULT_PRONUNCIATION_COLOR,
+    DEFAULT_RATE_COLOR,
+    DEFAULT_VOICE_MIX_COLOR,
+    is_color,
+)
 
 VOICE_SLOTS = 3
 MAX_VOICE_WEIGHT = 10
@@ -20,6 +27,19 @@ REQUEST_INACTIVITY_TIMEOUT_MS = (
     120_000  # Qt 6 defaults to 30 s, too short for slow first chunks
 )
 VOICES_TIMEOUT_MS = 10_000
+
+
+TAG_COLOR_KEYS = (
+    "pause_color",
+    "rate_color",
+    "pronunciation_color",
+    "voice_mix_color",
+)
+
+
+def _load_color(s: QSettings, key: str, default: str) -> str:
+    color = s.value(key, default, type=str)
+    return color.lower() if is_color(color) else default
 
 
 def build_voice_string(voices: list[str], weights: list[int]) -> str:
@@ -66,6 +86,11 @@ class AppSettings:
     scrub_step_s: int = 5
     ssml: bool = False
     restore_session: bool = True
+    # Backgrounds of the tags that aren't characters.
+    pause_color: str = DEFAULT_PAUSE_COLOR
+    rate_color: str = DEFAULT_RATE_COLOR
+    pronunciation_color: str = DEFAULT_PRONUNCIATION_COLOR
+    voice_mix_color: str = DEFAULT_VOICE_MIX_COLOR
 
     @property
     def voice_string(self) -> str:
@@ -108,6 +133,10 @@ class AppSettings:
             restore_session=s.value(
                 "restore_session", d.restore_session, type=bool
             ),
+            **{
+                key: _load_color(s, key, getattr(d, key))
+                for key in TAG_COLOR_KEYS
+            },
         )
 
     def save(self) -> None:
@@ -126,6 +155,8 @@ class AppSettings:
         s.setValue("scrub_step_s", self.scrub_step_s)
         s.setValue("ssml", self.ssml)
         s.setValue("restore_session", self.restore_session)
+        for key in TAG_COLOR_KEYS:
+            s.setValue(key, getattr(self, key))
         s.sync()
 
 
@@ -178,6 +209,14 @@ def save_window_geometry(geometry: QByteArray) -> None:
     s.sync()
 
 
+def load_highlight_tags() -> bool:
+    return QSettings().value("highlight_tags", True, type=bool)
+
+
+def save_highlight_tags(highlight: bool) -> None:
+    QSettings().setValue("highlight_tags", highlight)
+
+
 def load_tag_toolbar_visible() -> bool:
     return QSettings().value("tag_toolbar_visible", True, type=bool)
 
@@ -198,7 +237,12 @@ def load_casts() -> dict[str, list[Character]]:
         if not isinstance(cast, dict) or not cast.get("name"):
             continue
         casts[str(cast["name"])] = [
-            Character(str(c["name"]), str(c.get("voice", "")), _load_rate(c))
+            Character(
+                str(c["name"]),
+                str(c.get("voice", "")),
+                _load_rate(c),
+                c["color"].lower() if is_color(c.get("color")) else "",
+            )
             for c in cast.get("characters", [])
             if isinstance(c, dict) and c.get("name")
         ]
@@ -214,10 +258,14 @@ def _load_rate(character: dict) -> float:
 
 def save_casts(casts: dict[str, list[Character]]) -> None:
     def saved(c: Character) -> dict:
-        # The default rate is left out, as in the server's cast files.
-        if c.rate == 1.0:
-            return {"name": c.name, "voice": c.voice}
-        return {"name": c.name, "voice": c.voice, "rate": c.rate}
+        # Defaults are left out: the rate, as in the server's cast files,
+        # and the colour, which is then chosen from the name.
+        saved = {"name": c.name, "voice": c.voice}
+        if c.rate != 1.0:
+            saved["rate"] = c.rate
+        if c.color:
+            saved["color"] = c.color
+        return saved
 
     data = [
         {"name": name, "characters": [saved(c) for c in characters]}

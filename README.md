@@ -41,8 +41,8 @@ most recent files are remembered between sessions. Reopen recent files from
 
 Open **File → Settings…**. Switch tabs with Alt and the tab's first letter.
 
-- **Editor**: the editor font and size, and whether to restore the previous
-  session on startup (the last file and the last cast, each loaded on its own,
+- **Editor**: the editor font and size, the colours of tags that aren't
+  characters, and whether to restore the previous session on startup (the last file and the last cast, each loaded on its own,
   so a missing file doesn't stop the cast loading).
 - **Kokoro**: the server URL and model, the default voice mix, speed, a
   server-side volume multiplier, and playback options (PCM sample rate,
@@ -67,7 +67,10 @@ character has:
 - a **voice mix**, chosen like the default one, or left empty to decide later;
 - a **rate** from 0.25× to 4.00× that multiplies the speed setting whenever
   the character speaks. Hold Shift over the rate box to see the pace it gives
-  at the current speed.
+  at the current speed;
+- a **colour** for its tags in the text. New characters get one unlike the
+  others' (↻ suggests another), chosen to stand out on light and dark
+  editors; tag text is black or white, whichever reads better.
 
 Use **Add** to create one, double-click a row or press Enter to edit it, and
 **Remove** to delete it (you're warned if the document still uses it). Reorder
@@ -92,6 +95,21 @@ To insert a character's tag at the cursor:
 
 Renaming a character renames its tags in the open document, as a single undo
 step.
+
+### Tags in the text
+
+Tags are highlighted: a character's tags in its colour, raw voice mixes,
+pauses, rate changes and pronunciations in colours set under
+**Settings → Editor → Tag colours**. Unknown voice tags and tags that
+validation would flag get a red wavy underline. Turn highlighting off with
+**View → Highlight Tags** (Alt+Z).
+
+Hover over a tag to see what it does (or what's wrong with it).
+Double-click one to change it: pick another character for a voice tag
+(optionally for every tag of that character), or a new length, rate or
+pronunciation for the others. Drag a tag to move it, or Ctrl+drag to copy
+it; moving one leaves no stray space behind. Tags don't need spaces around
+them for any of this.
 
 ### Tag toolbar
 
@@ -135,7 +153,8 @@ just that character, and you can apply your choice to all remaining conflicts.
 
 Cast files are JSON in the `{"voice_aliases": {...}}` format that
 Kokoro-FastAPI's web UI imports and exports, so casts can move between the
-two. (The web UI skips characters that don't have a voice yet.)
+two. (The web UI skips characters that don't have a voice yet.) Character
+colours are kept alongside, under a `kokoro_editor` key the web UI ignores.
 
 ### Checking tags
 
@@ -203,6 +222,7 @@ sessions.
 | Show / hide the characters panel | Alt+-             |
 | Show / hide the tag toolbar      | Alt+=             |
 | Save the current cast            | Alt+S             |
+| Highlight tags on / off          | Alt+Z             |
 | Edit the selected character      | Enter (in panel)  |
 
 ## Development

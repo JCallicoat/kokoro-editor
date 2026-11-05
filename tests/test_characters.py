@@ -7,6 +7,7 @@ import json
 import pytest
 
 from kokoro_editor.characters import (
+    CAST_FILE_KEY,
     Character,
     cast_name_error,
     cast_to_json,
@@ -89,14 +90,19 @@ def test_cast_file_round_trip_keeps_voiceless_characters():
         Character("todo"),
     ]
     data = cast_to_json(cast)
-    assert data == {
-        "voice_aliases": {
-            "narrator": {"voice": "af_sky(2)+am_puck(1)", "rate": 0.8},
-            "bob": "am_puck",
-            "todo": "",
-        }
+    assert data["voice_aliases"] == {
+        "narrator": {"voice": "af_sky(2)+am_puck(1)", "rate": 0.8},
+        "bob": "am_puck",
+        "todo": "",
     }
-    assert characters_from_json(json.loads(json.dumps(data))) == (cast, [])
+    # Default colours are written out, and read back as the characters'.
+    colors = data[CAST_FILE_KEY]["colors"]
+    assert list(colors) == ["narrator", "bob", "todo"]
+    loaded, skipped = characters_from_json(json.loads(json.dumps(data)))
+    assert skipped == []
+    assert loaded == [
+        Character(c.name, c.voice, c.rate, colors[c.name]) for c in cast
+    ]
 
 
 def test_cast_file_may_be_a_bare_alias_object():

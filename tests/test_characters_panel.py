@@ -15,6 +15,7 @@ from kokoro_editor.characters_panel import (
     CharacterPickerDialog,
     PanelWidget,
 )
+from kokoro_editor.colors import is_color
 from kokoro_editor.settings import (
     AppSettings,
     load_casts,
@@ -79,8 +80,12 @@ def test_add_edit_and_cancel(panel, monkeypatch):
         "Edit Character",
         "Edit Character",
     ]
-    assert opened[1][1] == Character("bob", "am_puck")  # filled in for editing
-    assert panel.characters() == [Character("rob", "am_puck", 0.8)]
+    added = opened[1][1]  # filled in for editing, with its new colour
+    assert (added.name, added.voice) == ("bob", "am_puck")
+    assert is_color(added.color)
+    assert panel.characters() == [
+        Character("rob", "am_puck", 0.8, added.color)
+    ]
     assert renames == [("bob", "rob")]
     assert panel.table.item(0, 0).toolTip() == (
         "rob\nVoice: am_puck\nRate: 0.80×"
@@ -105,7 +110,9 @@ def test_character_dialog_refuses_bad_names(qapp, boxes):
     dialog.rate_spin.setValue(0.85000001)
     dialog.accept()
     assert dialog.result() == QDialog.DialogCode.Accepted
-    assert dialog.character() == Character("ok", "", 0.85)
+    assert dialog.character() == Character(
+        "ok", "", 0.85, dialog.color_button.color()
+    )
 
 
 def test_rate_tooltip_gives_detail_with_shift(qapp):
@@ -368,3 +375,78 @@ def test_closing_the_window_asks_about_an_unsaved_cast(window, boxes, saga):
     window.closeEvent(event)
     assert not event.isAccepted()
     assert boxes.last == "Save changes to the cast Saga?"
+
+
+# -- colours -------------------------------------------------------------- #
+def test_new_characters_get_a_colour_unlike_the_others(qapp):
+    from kokoro_editor.colors import hue_of
+
+    others = ["#c96532", "#2e8ab7"]  # an orange and a blue
+    dialog = CharacterDialog(
+        [],
+        AppSettings,
+        None,
+        lambda _a: None,
+        Character(""),
+        [],
+        other_colors=others,
+    )
+    hue = hue_of(dialog.character().color)
+    for other in others:
+        gap = abs(hue - hue_of(other))
+        assert min(gap, 360 - gap) > 60
+
+
+def test_a_default_colour_stays_default_unless_changed(qapp):
+    dialog = CharacterDialog(
+        [],
+        AppSettings,
+        None,
+        lambda _a: None,
+        Character("bob"),
+        [],
+        editing=True,
+        default_color="#2e8ab7",
+    )
+    assert dialog.color_button.color() == "#2e8ab7"
+    assert dialog.character().color == ""  # unchanged: still the default
+    dialog.color_button.set_color("#C96532")
+    assert dialog.character().color == "#c96532"
+
+
+def test_suggesting_another_colour(qapp):
+    dialog = CharacterDialog(
+        [],
+        AppSettings,
+        None,
+        lambda _a: None,
+        Character("x", color="#123456"),
+        [],
+    )
+    (suggest,) = [
+        b
+        for b in dialog.findChildren(characters_panel.QPushButton)
+        if b.text() == "↻"
+    ]
+    suggest.click()
+    assert dialog.character().color not in ("", "#123456")
+
+
+def test_table_shows_colour_swatches(panel):
+    panel.set_characters([Character("bob", color="#c96532"), Character("eve")])
+    swatch = panel.table.item(0, 0).data(Qt.ItemDataRole.DecorationRole)
+    assert swatch.name() == "#c96532"
+    default = panel.table.item(1, 0).data(Qt.ItemDataRole.DecorationRole)
+    assert default.name() == panel.colors()["eve"]
+
+
+def test_voice_column_text_is_padded():
+    from PySide6.QtCore import QRect
+
+    from kokoro_editor.characters_panel import VOICE_PADDING, _padded
+
+    cell = QRect(100, 10, 80, 20)
+    text = _padded(cell)
+    assert text.left() == cell.left() + VOICE_PADDING
+    assert text.right() == cell.right() - VOICE_PADDING
+    assert text.height() == cell.height()

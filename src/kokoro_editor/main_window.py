@@ -41,6 +41,7 @@ from kokoro_editor.characters import (
     MIN_RATE,
     Character,
     count_voice_tags,
+    is_voice_mix,
     merge_characters,
     strip_voice_tags,
     unknown_tag_names,
@@ -49,6 +50,7 @@ from kokoro_editor.characters import (
     voice_tag_pattern,
 )
 from kokoro_editor.characters_panel import CharacterPickerDialog, PanelWidget
+from kokoro_editor.highlighter import TagHighlighter
 from kokoro_editor.render_dialog import RenderDialog
 from kokoro_editor.settings import (
     REQUEST_INACTIVITY_TIMEOUT_MS,
@@ -58,12 +60,14 @@ from kokoro_editor.settings import (
     file_cast,
     fmt_time,
     load_casts,
+    load_highlight_tags,
     load_last_dir,
     load_recent_files,
     load_tag_toolbar_visible,
     load_window_geometry,
     remove_recent_file,
     save_file_cast,
+    save_highlight_tags,
     save_last_dir,
     save_recent_files,
     save_tag_toolbar_visible,
@@ -75,10 +79,12 @@ from kokoro_editor.settings_dialog import SettingsDialog
 from kokoro_editor.tag_toolbar import PronunciationDialog, TagToolbar
 from kokoro_editor.tags import (
     MAX_PAUSE_S,
+    find_tags,
     pause_budget_error,
     pause_tag,
     pronunciation_tag,
     rate_tag,
+    tag_at,
     tag_problems,
 )
 from kokoro_editor.widgets import EditorTextEdit, SeekSlider
@@ -181,6 +187,12 @@ class MainWindow(QMainWindow):
             lambda name: count_voice_tags(self.text_edit.toPlainText(), name)
         )
         self.text_edit.character_dropped.connect(self._insert_named_tag)
+        self.text_edit.tag_double_clicked.connect(self._edit_tag)
+        self.text_edit.tag_tooltip = self._tag_tooltip
+
+        self.highlighter = TagHighlighter(None)
+        self._highlighting = load_highlight_tags()
+        self.panel.characters_changed.connect(self._refresh_highlighter)
 
         self.tag_toolbar = TagToolbar()
         self.tag_toolbar.character_clicked.connect(self._insert_named_tag)
@@ -320,6 +332,14 @@ class MainWindow(QMainWindow):
         self.toolbar_action.setCheckable(True)
         self.toolbar_action.setChecked(self.tag_toolbar.isVisibleTo(self))
         view_menu.addAction(self.toolbar_action)
+        self.highlight_action = self._action(
+            "&Highlight Tags",
+            lambda checked: self._set_highlighting(checked),
+            "Alt+Z",
+        )
+        self.highlight_action.setCheckable(True)
+        self.highlight_action.setChecked(self._highlighting)
+        view_menu.addAction(self.highlight_action)
 
         playback_menu = bar.addMenu("&Playback")
         self.play_action = self._action(
@@ -465,6 +485,7 @@ class MainWindow(QMainWindow):
             self._validate_tags(quiet=True)
 
     def _on_voices_fetched(self) -> None:
+        self._refresh_highlighter()  # mixes can now be told from unknowns
         if self._validation_waiting:
             self._validation_waiting = False
             self._validate_tags(quiet=True)
@@ -526,6 +547,7 @@ class MainWindow(QMainWindow):
         """Push the current settings into the UI (at startup and after Settings)."""
         self.text_edit.setFont(self.settings.editor_font())
         self.panel.set_settings(self.settings)
+        self._refresh_highlighter()
         self._update_summary()
 
     def _update_summary(self) -> None:
@@ -847,22 +869,133 @@ class MainWindow(QMainWindow):
 
     def insert_tag(self, tag: str) -> None:
         """Insert tag at the cursor (the start of any selection), spaced
-        off from the words around it, and return focus to the editor."""
-        cursor = self.text_edit.textCursor()
-        position = cursor.selectionStart()
-        cursor.setPosition(position)
-        document = self.text_edit.document()
-        before = document.characterAt(position - 1) if position > 0 else ""
-        after = document.characterAt(position)
-        if before and not before.isspace():
-            tag = " " + tag
-        # At a line or document end, after is U+2029, which still wants a
-        # space so typing can carry on after the tag.
-        if after not in (" ", "\t"):
-            tag += " "
-        cursor.insertText(tag)
-        self.text_edit.setTextCursor(cursor)
+        off from text it would touch, and return focus to the editor."""
+        self.text_edit.insert_tag(tag)
+
+    # -- tags already in the text -------------------------------------------- #
+    def _tag_tooltip(self, text: str, index: int) -> str | None:
+        """What hovering the text at index says: a problem with a tag, or
+        what the tag does."""
+        for problem in tag_problems(text):
+            if problem.start <= index < problem.end:
+                return problem.message
+        tag = tag_at(text, index)
+        if tag is None:
+            return None
+        hint = "\n\nDouble-click to change it; drag it to move it."
+        if tag.kind == "voice":
+            character = self._character_named(tag.value)
+            if character is not None:
+                return character.tooltip() + hint
+            if is_voice_mix(tag.value, self.panel.voices()):
+                return f"Kokoro voice mix: {tag.value}" + hint
+            return (
+                f"{voice_tag(tag.value)} isn't a character in the current "
+                "cast or a Kokoro voice, so the server would refuse it." + hint
+            )
+        if tag.kind == "pause":
+            return f"A pause of {tag.value} seconds." + hint
+        if tag.kind == "pronunciation":
+            return f"“{tag.value}” said as /{tag.ipa}/." + hint
+        what = "Rate" if tag.kind == "rate" else "Base rate"
+        return f"{what} {tag.value}× until the next rate or voice tag." + hint
+
+    def _character_named(self, name: str) -> Character | None:
+        """The current cast's character called name, ignoring case as the
+        server does."""
+        for character in self.panel.characters():
+            if character.name.casefold() == name.casefold():
+                return character
+        return None
+
+    def _edit_tag(self, start: int, end: int) -> None:
+        """Double-clicking a tag: choose another character for a voice tag,
+        or a new value for the others, replacing just that tag (or, if
+        chosen, every tag for the same character)."""
+        cursor = QTextCursor(self.text_edit.document())
+        cursor.setPosition(start)
+        cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+        (tag,) = find_tags(cursor.selectedText())
+        replacement = None
+        if tag.kind == "voice":
+            choice = self._choose_replacement_character(tag.value)
+            if choice is not None:
+                name, everywhere = choice
+                if everywhere:
+                    count = self._replace_voice_tags(tag.value, name)
+                    self.status_label.setText(
+                        f"Changed {count} {voice_tag(tag.value)} to "
+                        f"{voice_tag(name)}."
+                    )
+                else:
+                    replacement = voice_tag(name)
+        elif tag.kind == "pause":
+            seconds, ok = QInputDialog.getDouble(
+                self,
+                "Change Pause",
+                "Pause length in seconds:",
+                float(tag.value),
+                0.05,
+                MAX_PAUSE_S,
+                2,
+            )
+            if ok:
+                replacement = pause_tag(seconds)
+        elif tag.kind in ("rate", "baserate"):
+            rate, ok = QInputDialog.getDouble(
+                self,
+                "Change Rate",
+                "Speaking rate until the next rate or voice tag:",
+                float(tag.value),
+                MIN_RATE,
+                MAX_RATE,
+                2,
+            )
+            if ok:
+                replacement = f"[{tag.kind}:{rate:g}]"
+        else:
+            dialog = PronunciationDialog(tag.value, tag.ipa, self)
+            dialog.setWindowTitle("Change Pronunciation")
+            accepted = dialog.exec() == QDialog.DialogCode.Accepted
+            word, ipa = dialog.values()
+            dialog.deleteLater()
+            if accepted:
+                replacement = pronunciation_tag(word, ipa)
+        if replacement is not None:
+            cursor.insertText(replacement)  # exactly in the tag's place
+            self.text_edit.setTextCursor(cursor)
         self.text_edit.setFocus()
+
+    def _choose_replacement_character(
+        self, name: str
+    ) -> tuple[str, bool] | None:
+        """Ask which character a voice tag should be: (name to tag,
+        whether to change every tag for name), or None if cancelled. A
+        character from another cast is imported into the current one."""
+        chosen: list[str] = []
+
+        def adopt(choice: tuple[str | None, str]) -> bool:
+            adopted = self._adopt_character(*choice)
+            if adopted is not None:
+                chosen.append(adopted)
+            return adopted is not None
+
+        dialog = CharacterPickerDialog(
+            self.panel.cast_name(),
+            self.panel.characters(),
+            self,
+            title="Change Character",
+            message=f"Change {voice_tag(name)} to:",
+            ok_text="Change",
+            accept_check=adopt,
+            option_text=f"Change every {voice_tag(name)} in the document",
+        )
+        accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        everywhere = dialog.option_check.isChecked()
+        dialog.deleteLater()
+        if not accepted or not chosen:
+            return None
+        return chosen[-1], everywhere
 
     def _insert_pause(self) -> None:
         seconds, ok = QInputDialog.getDouble(
@@ -914,6 +1047,29 @@ class MainWindow(QMainWindow):
             else:
                 self.insert_tag(tag)
         self.text_edit.setFocus()
+
+    # -- tag highlighting --------------------------------------------------- #
+    def _refresh_highlighter(self) -> None:
+        if not self._highlighting:
+            return
+        if self.highlighter.document() is None:
+            self.highlighter.setDocument(self.text_edit.document())
+        self.highlighter.update(
+            self.panel.characters(),
+            self.panel.colors(),
+            self.panel.voices(),
+            self.settings,
+        )
+
+    def _set_highlighting(self, highlight: bool) -> None:
+        """View > Highlight Tags. Off, the highlighter is detached so the
+        text goes back to plain."""
+        self._highlighting = highlight
+        save_highlight_tags(highlight)
+        if highlight:
+            self._refresh_highlighter()
+        else:
+            self.highlighter.setDocument(None)
 
     def _save_cast(self) -> None:
         """File > Save Cast, like the panel's save button: a cast not

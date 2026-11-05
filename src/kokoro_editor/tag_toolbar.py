@@ -23,7 +23,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from kokoro_editor.characters import Character
+from kokoro_editor.characters import Character, character_colors
+from kokoro_editor.colors import text_color
 from kokoro_editor.tags import pronunciation_error
 
 # Longest character name shown on a button; longer ones are shortened.
@@ -120,11 +121,20 @@ class CharacterStrip(QWidget):
             button.hide()
             button.deleteLater()
         self.buttons = []
+        colors = character_colors(characters)
         for character in characters:
             button = QToolButton()
             button.setText(button_label(character.name))
             button.setToolTip(character.tooltip())
             button.setAutoRaise(True)
+            # In its tag colour, as in the text.
+            color = colors[character.name.casefold()]
+            button.setStyleSheet(
+                f"QToolButton {{ background-color: {color};"
+                f" color: {text_color(color)}; border-radius: 3px;"
+                " padding: 2px 6px; }"
+                " QToolButton:hover { border: 1px solid palette(highlight); }"
+            )
             # Leave focus in the editor.
             button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             button.clicked.connect(
