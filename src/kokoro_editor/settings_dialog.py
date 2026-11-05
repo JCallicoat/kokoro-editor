@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import json
-from dataclasses import replace
 from collections.abc import Callable
+from dataclasses import replace
 
 from PySide6.QtGui import QFont
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply

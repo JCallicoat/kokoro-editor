@@ -115,20 +115,21 @@ def characters_from_json(data) -> tuple[list[Character], list[str]]:
     """
     aliases = data.get("voice_aliases", data) if isinstance(data, dict) else 0
     if not isinstance(aliases, dict):
-        raise ValueError("Expected a JSON object of voice aliases.")
+        # A problem with the file's content, reported like invalid JSON.
+        raise ValueError("Expected a JSON object of voice aliases.")  # noqa: TRY004
     characters: list[Character] = []
     skipped: list[str] = []
     for raw_name, value in aliases.items():
         name = str(raw_name).strip()
-        try:
-            if isinstance(value, str):
-                voice, rate = value.strip(), 1.0
-            elif isinstance(value, dict):
-                voice = str(value.get("voice", "")).strip()
+        if isinstance(value, str):
+            voice, rate = value.strip(), 1.0
+        elif isinstance(value, dict):
+            voice = str(value.get("voice", "")).strip()
+            try:
                 rate = float(value.get("rate", 1.0))
-            else:
-                raise ValueError(value)
-        except (TypeError, ValueError):
+            except (TypeError, ValueError):
+                rate = math.nan  # refused below
+        else:
             skipped.append(name)
             continue
         taken = [c.name for c in characters]
@@ -195,7 +196,17 @@ def strip_voice_tags(text: str, names: list[str]) -> str:
 # Kokoro-FastAPI also accepts these OpenAI voice names, mapped to its own
 # voices; they aren't in its voice list (openai_mappings.json).
 OPENAI_VOICE_NAMES = frozenset(
-    "alloy ash coral echo fable onyx nova sage shimmer".split()
+    [
+        "alloy",
+        "ash",
+        "coral",
+        "echo",
+        "fable",
+        "onyx",
+        "nova",
+        "sage",
+        "shimmer",
+    ]
 )
 # Mirrors _VOICE_WEIGHT_PATTERN in Kokoro-FastAPI's openai_compatible.py.
 _MIX_ITEM_PATTERN = re.compile(r"(?P<name>[^()]+)(?:\((?P<weight>[^()]*)\))?")

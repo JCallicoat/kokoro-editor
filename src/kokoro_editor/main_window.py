@@ -611,7 +611,10 @@ class MainWindow(QMainWindow):
         for name in names:
             replacement: list[str] = []
 
-            def adopt(choice: tuple[str | None, str]) -> bool:
+            def adopt(
+                choice: tuple[str | None, str],
+                replacement: list[str] = replacement,
+            ) -> bool:
                 adopted = self._adopt_character(*choice)
                 if adopted is not None:
                     replacement.append(adopted)

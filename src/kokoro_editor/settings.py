@@ -80,7 +80,7 @@ class AppSettings:
         return font
 
     @classmethod
-    def load(cls) -> "AppSettings":
+    def load(cls) -> AppSettings:
         s = QSettings()
         d = cls()
         slots = range(1, VOICE_SLOTS + 1)

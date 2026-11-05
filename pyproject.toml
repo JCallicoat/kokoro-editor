@@ -26,3 +26,16 @@ kokoro-editor = "kokoro_editor.app:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/kokoro_editor"]
+
+[tool.ruff]
+line-length = 79
+
+[tool.ruff.lint]
+# Ruff's default rules, except:
+ignore = [
+    # Audio device and stream errors come in many types (PortAudio,
+    # sounddevice); they're shown to the user or, when closing a stream,
+    # safely ignored.
+    "BLE001",  # blind except
+    "S110",    # try-except-pass
+]
