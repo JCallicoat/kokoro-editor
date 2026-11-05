@@ -252,6 +252,19 @@ def save_last_character(cast: str, character: str) -> None:
     QSettings().setValue("last_characters", json.dumps(picks))
 
 
+def rename_cast(old: str, new: str) -> None:
+    """Rename a saved cast in place, carrying over what's remembered about
+    it (the last cast, and its last picked character)."""
+    casts = load_casts()
+    save_casts({new if n == old else n: c for n, c in casts.items()})
+    picks = load_last_characters()
+    if old in picks:
+        picks[new] = picks.pop(old)
+        QSettings().setValue("last_characters", json.dumps(picks))
+    if load_last_cast() == old:
+        save_last_cast(new)
+
+
 def load_last_cast() -> str:
     return QSettings().value("last_cast", "", type=str)
 

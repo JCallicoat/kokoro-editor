@@ -4,7 +4,8 @@ referred to in the text with [voice:name] tags."""
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
 
 # Kokoro-FastAPI's web UI only imports cast names of this form, so sticking
 # to it keeps the two interchangeable (its cast files are voice_aliases).
@@ -83,6 +84,96 @@ def voice_aliases(characters: list[Character]) -> dict[str, str | dict]:
     """The voice_aliases request field. Characters without a voice are left
     out, since the server rejects an alias with an empty mix."""
     return {c.name: c.alias_value() for c in characters if c.voice}
+
+
+def cast_name_error(name: str, other_names: list[str]) -> str | None:
+    """Why name can't be used for a cast, or None if it can."""
+    if not name:
+        return "Enter a name for the cast."
+    if name.casefold() in {n.casefold() for n in other_names}:
+        return f"There is already a cast named {name}."
+    return None
+
+
+# -- cast files ------------------------------------------------------------- #
+# A cast file is the voice_aliases request field wrapped in an object, the
+# format Kokoro-FastAPI's web UI exports and imports.
+def cast_to_json(characters: list[Character]) -> dict:
+    """A cast file's contents. Unlike requests, characters without a voice
+    are kept (with an empty mix) so they survive a round trip; the web UI
+    skips them."""
+    return {"voice_aliases": {c.name: c.alias_value() for c in characters}}
+
+
+def characters_from_json(data) -> tuple[list[Character], list[str]]:
+    """Characters from a cast file, also accepting a bare voice_aliases
+    object, and the names skipped as unusable (a bad name or rate, or a
+    name repeated in another case).
+
+    Raises ValueError if data isn't a cast file at all.
+    """
+    aliases = data.get("voice_aliases", data) if isinstance(data, dict) else 0
+    if not isinstance(aliases, dict):
+        raise ValueError("Expected a JSON object of voice aliases.")
+    characters: list[Character] = []
+    skipped: list[str] = []
+    for raw_name, value in aliases.items():
+        name = str(raw_name).strip()
+        try:
+            if isinstance(value, str):
+                voice, rate = value.strip(), 1.0
+            elif isinstance(value, dict):
+                voice = str(value.get("voice", "")).strip()
+                rate = float(value.get("rate", 1.0))
+            else:
+                raise ValueError(value)
+        except (TypeError, ValueError):
+            skipped.append(name)
+            continue
+        taken = [c.name for c in characters]
+        if not MIN_RATE <= rate <= MAX_RATE or name_error(name, taken):
+            skipped.append(name)
+            continue
+        characters.append(Character(name, voice, rate))
+    return characters, skipped
+
+
+@dataclass
+class MergeReport:
+    added: list[str] = field(default_factory=list)
+    replaced: list[str] = field(default_factory=list)
+    renamed: list[str] = field(default_factory=list)  # new names
+    skipped: list[str] = field(default_factory=list)
+
+
+def merge_characters(
+    target: list[Character],
+    incoming: list[Character],
+    resolve: Callable[[Character, list[str]], tuple[str, str]],
+) -> tuple[list[Character], MergeReport]:
+    """Add incoming characters to target, asking resolve(character,
+    taken_names) what to do about each name already taken (ignoring case):
+    ("overwrite", _) replaces the existing character in place,
+    ("rename", new_name) adds it as new_name, ("skip", _) leaves it out."""
+    result = list(target)
+    report = MergeReport()
+    for character in incoming:
+        taken = [c.name for c in result]
+        folded = [n.casefold() for n in taken]
+        if character.name.casefold() not in folded:
+            result.append(character)
+            report.added.append(character.name)
+            continue
+        action, new_name = resolve(character, taken)
+        if action == "overwrite":
+            result[folded.index(character.name.casefold())] = character
+            report.replaced.append(character.name)
+        elif action == "rename" and not name_error(new_name, taken):
+            result.append(replace(character, name=new_name))
+            report.renamed.append(new_name)
+        else:
+            report.skipped.append(character.name)
+    return result, report
 
 
 def unvoiced_tag_names(text: str, characters: list[Character]) -> list[str]:

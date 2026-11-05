@@ -27,6 +27,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from kokoro_editor.casts_tab import CastsTab
+from kokoro_editor.characters_panel import PanelWidget
 from kokoro_editor.settings import (
     MAX_FONT_SIZE,
     MIN_FONT_SIZE,
@@ -43,6 +45,7 @@ class SettingsDialog(QDialog):
         settings: AppSettings,
         nam: QNetworkAccessManager,
         on_preview_active: Callable[[bool], None],
+        panel: PanelWidget,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -55,15 +58,21 @@ class SettingsDialog(QDialog):
         self._reply: QNetworkReply | None = None
 
         # One tab per area; add new tabs by writing another _build_*_tab().
+        # Each tab is reachable with Alt and its first letter.
         self.tabs = QTabWidget()
-        self.tabs.addTab(self._build_editor_tab(settings), "Editor")
+        self.tabs.addTab(self._build_editor_tab(settings), "&Editor")
         self.kokoro_tab = self._build_kokoro_tab(settings, on_preview_active)
-        self.tabs.addTab(self.kokoro_tab, "Kokoro")
+        self.tabs.addTab(self.kokoro_tab, "&Kokoro")
+        self.tabs.addTab(CastsTab(panel), "&Casts")
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel
         )
+        # Some styles label Cancel "&Cancel", which would make Alt+C
+        # ambiguous with the Casts tab; Escape still cancels.
+        cancel = buttons.button(QDialogButtonBox.StandardButton.Cancel)
+        cancel.setText(cancel.text().replace("&", ""))
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
 

@@ -53,6 +53,7 @@ from kokoro_editor.characters import (
     MAX_RATE,
     MIN_RATE,
     Character,
+    cast_name_error,
     clamp_rate,
     name_error,
     voice_aliases,
@@ -499,7 +500,7 @@ class PanelWidget(QWidget):
         content_layout.addLayout(cast_row)
         content_layout.addSpacing(8)
 
-        # Characters section: the cast's characters, with Add/Remove below
+        # Characters section: Add/Remove and move buttons above the table
         self.title_label = QLabel("Characters")
         self.title_label.setStyleSheet("font-weight: bold;")
         content_layout.addWidget(self.title_label)
@@ -521,9 +522,7 @@ class PanelWidget(QWidget):
         self.table.cellDoubleClicked.connect(self._on_cell_double_clicked)
         # Voice column: wrap and ellipsize text
         self.table.setItemDelegateForColumn(1, _VoiceItemDelegate(self.table))
-        content_layout.addWidget(self.table, 1)
 
-        # Footer buttons
         button_row = QHBoxLayout()
         self.add_btn = QPushButton("Add")
         self.add_btn.setIcon(
@@ -555,6 +554,7 @@ class PanelWidget(QWidget):
         self._enter_action.triggered.connect(self._on_enter)
         self.addAction(self._enter_action)
         content_layout.addLayout(button_row)
+        content_layout.addWidget(self.table, 1)
 
         layout.addWidget(self.content)
         self.set_collapsed(True)
@@ -747,7 +747,7 @@ class PanelWidget(QWidget):
 
     def _ask_cast_name(self, title: str) -> str | None:
         """A name not used by any saved cast, or None if cancelled."""
-        taken = {n.casefold() for n in load_casts()}
+        taken = list(load_casts())
         name = ""
         while True:
             name, ok = QInputDialog.getText(
@@ -756,14 +756,24 @@ class PanelWidget(QWidget):
             name = name.strip()
             if not ok:
                 return None
-            if not name:
-                QMessageBox.warning(self, title, "Enter a name for the cast.")
-            elif name.casefold() in taken:
-                QMessageBox.warning(
-                    self, title, f"There is already a cast named {name}."
-                )
-            else:
+            error = cast_name_error(name, taken)
+            if not error:
                 return name
+            QMessageBox.warning(self, title, error)
+
+    # -- changes made from the Casts settings tab --------------------------- #
+    def cast_renamed(self, old: str, new: str) -> None:
+        if self._cast_name == old:
+            self._cast_name = new
+            save_last_cast(new)
+        self._refresh_casts()
+
+    def casts_changed(self, name: str) -> None:
+        """The saved cast called name changed; show it if it's current."""
+        if name == self._cast_name:
+            self.load_cast(name)
+        else:
+            self._refresh_casts()
 
     def _on_cast_activated(self, index: int) -> None:
         # On cancel switch_cast puts the dropdown back.

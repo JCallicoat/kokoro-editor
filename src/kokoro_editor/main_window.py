@@ -477,7 +477,11 @@ class MainWindow(QMainWindow):
 
     def _open_settings(self) -> None:
         dialog = SettingsDialog(
-            self.settings, self._nam, self._on_preview_active, self
+            self.settings,
+            self._nam,
+            self._on_preview_active,
+            self.panel,
+            self,
         )
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.settings = dialog.result_settings()
