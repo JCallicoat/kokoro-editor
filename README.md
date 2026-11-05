@@ -8,6 +8,9 @@ writing multi-speaker dialogue.
 Audio is streamed as raw PCM, buffered in memory and played back locally, so
 playback can be paused, resumed and scrubbed without touching the server.
 
+![Kokoro Editor with a cast of characters, their voice tags highlighted in
+the text, and the Characters panel open](docs/screenshot.png)
+
 ## Install
 
 ```sh
