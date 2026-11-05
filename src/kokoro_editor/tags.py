@@ -34,6 +34,33 @@ _LINK = re.compile(r"[a-z][a-z0-9+.-]*:|www\.|#", re.IGNORECASE)
 _NUMBER = re.compile(r"\d+(?:\.\d+)?")
 
 
+def pause_tag(seconds: float) -> str:
+    return f"[pause:{seconds:g}s]"
+
+
+def rate_tag(rate: float) -> str:
+    return f"[rate:{rate:g}]"
+
+
+def pronunciation_tag(word: str, ipa: str) -> str:
+    return f"[{word}](/{ipa}/)"
+
+
+def pronunciation_error(word: str, ipa: str) -> str | None:
+    """Why word and ipa can't make a pronunciation tag, or None if they
+    can (the server's pattern allows no brackets in the word, nor slashes
+    or parentheses in the IPA)."""
+    if not word.strip():
+        return "Enter the word to pronounce."
+    if re.search(r"[\[\]]", word):
+        return "The word can't contain square brackets."
+    if not ipa.strip():
+        return "Enter its pronunciation in IPA."
+    if re.search(r"[/()]", ipa):
+        return "The IPA can't contain slashes or parentheses."
+    return None
+
+
 @dataclass
 class TagProblem:
     start: int  # index of the tag in the text

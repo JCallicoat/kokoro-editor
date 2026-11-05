@@ -83,6 +83,7 @@ character is just a voice tag with its name:
 
 To insert a character's tag at the cursor:
 
+- click the character's button on the tag toolbar under the editor;
 - drag the character's row onto the editor;
 - press **Alt+1** to **Alt+9** for the first nine characters (also listed
   under **Edit → Insert Character Tag**);
@@ -92,12 +93,27 @@ To insert a character's tag at the cursor:
 Renaming a character renames its tags in the open document, as a single undo
 step.
 
+### Tag toolbar
+
+The toolbar under the editor has a button for each character in the current
+cast (names over 20 characters are shortened; if they don't all fit, arrows
+or the mouse wheel scroll them), then buttons for the server's other tags:
+
+- **Pause** asks for a length in seconds and inserts `[pause:1.5s]`;
+- **Rate** asks for a speaking rate (until the next rate or voice tag) and
+  inserts `[rate:1.2]`;
+- **Pronunciation** asks for a word and its IPA and inserts
+  `[Worcester](/wˈʊstər/)`, replacing the word if it's selected.
+
+Hide or show it with **View → Tag Toolbar** (Alt+=); the choice is
+remembered.
+
 ### Casts
 
 A cast is a named, saved list of characters, shared by all documents. The
 **Cast** row at the top of the panel switches between saved casts and has
 buttons to create a new (empty) cast, delete the current one, and save its
-changes. You're asked whether to save unsaved changes before switching casts,
+changes (also **File → Save Cast**, Alt+S). You're asked whether to save unsaved changes before switching casts,
 creating one, or quitting.
 
 Saving a file remembers the cast it was saved with (for your recent files).
@@ -185,6 +201,8 @@ sessions.
 | Insert character 1–9's tag       | Alt+1 … Alt+9     |
 | Pick a character to insert       | Alt+0             |
 | Show / hide the characters panel | Alt+-             |
+| Show / hide the tag toolbar      | Alt+=             |
+| Save the current cast            | Alt+S             |
 | Edit the selected character      | Enter (in panel)  |
 
 ## Development

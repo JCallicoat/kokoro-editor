@@ -517,7 +517,7 @@ class PanelWidget(QWidget):
         )
         self.delete_cast_btn.clicked.connect(self._on_delete_cast)
         self.save_cast_btn = self._icon_button(
-            QStyle.StandardPixmap.SP_DialogSaveButton, "Save cast"
+            QStyle.StandardPixmap.SP_DialogSaveButton, "Save cast (Alt+S)"
         )
         self.save_cast_btn.clicked.connect(self.save_cast)
         cast_row = QHBoxLayout()

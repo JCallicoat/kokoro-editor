@@ -178,6 +178,14 @@ def save_window_geometry(geometry: QByteArray) -> None:
     s.sync()
 
 
+def load_tag_toolbar_visible() -> bool:
+    return QSettings().value("tag_toolbar_visible", True, type=bool)
+
+
+def save_tag_toolbar_visible(visible: bool) -> None:
+    QSettings().setValue("tag_toolbar_visible", visible)
+
+
 # -- casts: named character lists shared by all documents ------------------- #
 def load_casts() -> dict[str, list[Character]]:
     """Saved casts by name, in the order they were first saved."""

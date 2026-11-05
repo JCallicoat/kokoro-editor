@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -36,6 +37,8 @@ from kokoro_editor import audio
 from kokoro_editor.audio import PCMPlayer
 from kokoro_editor.casts_tab import ConflictResolver
 from kokoro_editor.characters import (
+    MAX_RATE,
+    MIN_RATE,
     Character,
     count_voice_tags,
     merge_characters,
@@ -57,17 +60,27 @@ from kokoro_editor.settings import (
     load_casts,
     load_last_dir,
     load_recent_files,
+    load_tag_toolbar_visible,
     load_window_geometry,
     remove_recent_file,
     save_file_cast,
     save_last_dir,
     save_recent_files,
+    save_tag_toolbar_visible,
     save_window_geometry,
     speech_payload,
     speech_request,
 )
 from kokoro_editor.settings_dialog import SettingsDialog
-from kokoro_editor.tags import pause_budget_error, tag_problems
+from kokoro_editor.tag_toolbar import PronunciationDialog, TagToolbar
+from kokoro_editor.tags import (
+    MAX_PAUSE_S,
+    pause_budget_error,
+    pause_tag,
+    pronunciation_tag,
+    rate_tag,
+    tag_problems,
+)
 from kokoro_editor.widgets import EditorTextEdit, SeekSlider
 
 APP_NAME = "Kokoro Editor"
@@ -169,8 +182,27 @@ class MainWindow(QMainWindow):
         )
         self.text_edit.character_dropped.connect(self._insert_named_tag)
 
+        self.tag_toolbar = TagToolbar()
+        self.tag_toolbar.character_clicked.connect(self._insert_named_tag)
+        self.tag_toolbar.pause_clicked.connect(self._insert_pause)
+        self.tag_toolbar.rate_clicked.connect(self._insert_rate)
+        self.tag_toolbar.pronunciation_clicked.connect(
+            self._insert_pronunciation
+        )
+        self.panel.characters_changed.connect(
+            lambda: self.tag_toolbar.set_characters(self.panel.characters())
+        )
+        self.tag_toolbar.setVisible(load_tag_toolbar_visible())
+        self._last_pause_s = 1.0
+        self._last_rate = 1.0
+        self._last_ipa = ""
+
+        # The toolbar sits under the editor, beside the panel.
+        editor_column = QVBoxLayout()
+        editor_column.addWidget(self.text_edit, 1)
+        editor_column.addWidget(self.tag_toolbar)
         top = QHBoxLayout()
-        top.addWidget(self.text_edit, 1)
+        top.addLayout(editor_column, 1)
         top.addWidget(self.panel)
 
         central = QWidget()
@@ -212,6 +244,9 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self._action("&Save", self.save, Key.Save))
         file_menu.addAction(
             self._action("Save &As…", self.save_as, "Ctrl+Shift+S")
+        )
+        file_menu.addAction(
+            self._action("Sa&ve Cast", self._save_cast, "Alt+S")
         )
         file_menu.addAction(
             self._action("&Close", self.close_document, "Ctrl+W")
@@ -277,6 +312,14 @@ class MainWindow(QMainWindow):
             lambda collapsed: self.panel_action.setChecked(not collapsed)
         )
         view_menu.addAction(self.panel_action)
+        self.toolbar_action = self._action(
+            "&Tag Toolbar",
+            lambda checked: self._show_tag_toolbar(checked),
+            "Alt+=",
+        )
+        self.toolbar_action.setCheckable(True)
+        self.toolbar_action.setChecked(self.tag_toolbar.isVisibleTo(self))
+        view_menu.addAction(self.toolbar_action)
 
         playback_menu = bar.addMenu("&Playback")
         self.play_action = self._action(
@@ -798,16 +841,19 @@ class MainWindow(QMainWindow):
         return count
 
     def insert_voice_tag(self, character: Character) -> None:
-        """Insert character's [voice:...] tag at the cursor (the start of
-        any selection), spaced off from the words around it. Every way of
+        """Insert character's [voice:...] tag at the cursor. Every way of
         inserting a character tag goes through here."""
+        self.insert_tag(voice_tag(character.name))
+
+    def insert_tag(self, tag: str) -> None:
+        """Insert tag at the cursor (the start of any selection), spaced
+        off from the words around it, and return focus to the editor."""
         cursor = self.text_edit.textCursor()
         position = cursor.selectionStart()
         cursor.setPosition(position)
         document = self.text_edit.document()
         before = document.characterAt(position - 1) if position > 0 else ""
         after = document.characterAt(position)
-        tag = voice_tag(character.name)
         if before and not before.isspace():
             tag = " " + tag
         # At a line or document end, after is U+2029, which still wants a
@@ -817,6 +863,69 @@ class MainWindow(QMainWindow):
         cursor.insertText(tag)
         self.text_edit.setTextCursor(cursor)
         self.text_edit.setFocus()
+
+    def _insert_pause(self) -> None:
+        seconds, ok = QInputDialog.getDouble(
+            self,
+            "Insert Pause",
+            "Pause length in seconds:",
+            self._last_pause_s,
+            0.05,
+            MAX_PAUSE_S,
+            2,
+        )
+        if ok:
+            self._last_pause_s = seconds
+            self.insert_tag(pause_tag(seconds))
+        self.text_edit.setFocus()
+
+    def _insert_rate(self) -> None:
+        rate, ok = QInputDialog.getDouble(
+            self,
+            "Insert Rate Change",
+            "Speaking rate until the next rate or voice tag (1 is the "
+            "voice's own):",
+            self._last_rate,
+            MIN_RATE,
+            MAX_RATE,
+            2,
+        )
+        if ok:
+            self._last_rate = rate
+            self.insert_tag(rate_tag(rate))
+        self.text_edit.setFocus()
+
+    def _insert_pronunciation(self) -> None:
+        """Ask for a word's pronunciation; a selected word is replaced by
+        its tag, otherwise the tag goes in at the cursor."""
+        cursor = self.text_edit.textCursor()
+        # selectedText() separates paragraphs with U+2029.
+        selected = cursor.selectedText().replace("\u2029", " ").strip()
+        dialog = PronunciationDialog(selected, self._last_ipa, self)
+        accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        word, ipa = dialog.values()
+        dialog.deleteLater()
+        if accepted:
+            self._last_ipa = ipa
+            tag = pronunciation_tag(word, ipa)
+            if selected:
+                cursor.insertText(tag)
+                self.text_edit.setTextCursor(cursor)
+            else:
+                self.insert_tag(tag)
+        self.text_edit.setFocus()
+
+    def _save_cast(self) -> None:
+        """File > Save Cast, like the panel's save button: a cast not
+        saved yet is asked for a name."""
+        if self.panel.save_cast():
+            self.status_label.setText(
+                f"Saved the cast {self.panel.cast_name()}."
+            )
+
+    def _show_tag_toolbar(self, show: bool) -> None:
+        self.tag_toolbar.setVisible(show)
+        save_tag_toolbar_visible(show)
 
     def _insert_named_tag(self, name: str) -> None:
         character = self.panel.character_named(name)
