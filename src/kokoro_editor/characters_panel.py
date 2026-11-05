@@ -378,7 +378,7 @@ class CharacterPickerDialog(QDialog):
     It opens on the current cast, showing its unsaved edits, and in each
     cast selects the character last picked there. Only the current cast's
     characters are sent to the server, so a pick from another cast needs
-    the caller to switch to that cast or import the character.
+    the caller to import the character (see accept_check).
 
     accept_check(choice), if given, can refuse a pick to keep the dialog
     open; message, ok_text, cancel_text and option_text (a checkbox, read

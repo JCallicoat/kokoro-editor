@@ -129,24 +129,48 @@ def test_alt_digits_insert_characters(shown):
     ]
 
 
-def test_alt_0_pick_from_another_cast_switches_to_it(
+def test_alt_0_imports_a_character_from_another_cast(
     shown, boxes, monkeypatch
 ):
     save_cast("Other", [Character("eve", "af_bella")])
-    shown.panel.set_characters([Character("changed")])
+    attempts = []
 
     def pick_eve(dialog):
         dialog.cast_box.setCurrentText("Other")
         dialog.character_list.setCurrentRow(0)
-        dialog.accept()
+        for _ in range(2):  # declined first, so the picker stays open
+            attempts.append(boxes.answers[0])
+            dialog.accept()
+            if dialog.result() == QDialog.DialogCode.Accepted:
+                break
         return dialog.result()
 
     monkeypatch.setattr(CharacterPickerDialog, "exec", pick_eve)
     shown.text_edit.clear()
-    boxes.answers = [Btn.Discard]
+    boxes.answers = [Btn.No, Btn.Yes]  # import eve? No, then Yes
     alt(shown, Qt.Key.Key_0)
-    assert shown.panel.cast_name() == "Other"
+    assert attempts == [Btn.No, Btn.Yes]
+    assert boxes.last == (
+        "eve is in the cast Other. Import it into Saga so its tags can be "
+        "spoken?"
+    )
+    assert shown.panel.cast_name() == "Saga"  # no switch
+    assert shown.panel.character_named("eve") == Character("eve", "af_bella")
+    assert shown.panel.cast_modified()
     assert shown.text_edit.toPlainText() == "[voice:eve] "
+
+
+def test_alt_0_from_the_current_cast_just_inserts(shown, boxes, monkeypatch):
+    def pick_bob(dialog):
+        dialog.character_list.setCurrentRow(1)
+        dialog.accept()
+        return dialog.result()
+
+    monkeypatch.setattr(CharacterPickerDialog, "exec", pick_bob)
+    shown.text_edit.clear()
+    alt(shown, Qt.Key.Key_0)
+    assert boxes.messages == []
+    assert shown.text_edit.toPlainText() == "[voice:bob] "
 
 
 def test_alt_minus_toggles_the_panel(shown):

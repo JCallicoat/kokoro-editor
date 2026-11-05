@@ -764,36 +764,47 @@ class MainWindow(QMainWindow):
         """Ask for a character to stand in for each unknown tag name, and
         replace its tags throughout the document. Skipped ones stay."""
         for name in names:
-            replacement: list[str] = []
-
-            def adopt(
-                choice: tuple[str | None, str],
-                replacement: list[str] = replacement,
-            ) -> bool:
-                adopted = self._adopt_character(*choice)
-                if adopted is not None:
-                    replacement.append(adopted)
-                return adopted is not None
-
-            dialog = CharacterPickerDialog(
-                self.panel.cast_name(),
-                self.panel.characters(),
-                self,
+            picked = self._pick_character(
                 title="Replace Voice Tag",
                 message=f"Replace every {voice_tag(name)} in the document "
                 "with:",
                 ok_text="Replace",
                 cancel_text="Skip",
-                accept_check=adopt,
             )
-            accepted = dialog.exec() == QDialog.DialogCode.Accepted
-            dialog.deleteLater()
-            if accepted and replacement:
-                count = self._replace_voice_tags(name, replacement[0])
+            if picked is not None:
+                count = self._replace_voice_tags(name, picked[0])
                 self.status_label.setText(
                     f"Replaced {count} {voice_tag(name)} with "
-                    f"{voice_tag(replacement[0])}."
+                    f"{voice_tag(picked[0])}."
                 )
+
+    def _pick_character(self, **dialog_options) -> tuple[str, bool] | None:
+        """Pick a character from any cast with CharacterPickerDialog (its
+        options as given): the name to tag, and whether its option box was
+        ticked; None if cancelled. Only the current cast's characters reach
+        the server, so one from another cast is imported into it first;
+        declining keeps the picker open."""
+        picked: list[str] = []
+
+        def adopt(choice: tuple[str | None, str]) -> bool:
+            adopted = self._adopt_character(*choice)
+            if adopted is not None:
+                picked.append(adopted)
+            return adopted is not None
+
+        dialog = CharacterPickerDialog(
+            self.panel.cast_name(),
+            self.panel.characters(),
+            self,
+            accept_check=adopt,
+            **dialog_options,
+        )
+        accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        option = dialog.option_check.isChecked()
+        dialog.deleteLater()
+        if not accepted or not picked:
+            return None
+        return picked[-1], option
 
     def _adopt_character(self, cast: str | None, name: str) -> str | None:
         """The name to tag for a character picked from cast, importing it
@@ -970,32 +981,13 @@ class MainWindow(QMainWindow):
         self, name: str
     ) -> tuple[str, bool] | None:
         """Ask which character a voice tag should be: (name to tag,
-        whether to change every tag for name), or None if cancelled. A
-        character from another cast is imported into the current one."""
-        chosen: list[str] = []
-
-        def adopt(choice: tuple[str | None, str]) -> bool:
-            adopted = self._adopt_character(*choice)
-            if adopted is not None:
-                chosen.append(adopted)
-            return adopted is not None
-
-        dialog = CharacterPickerDialog(
-            self.panel.cast_name(),
-            self.panel.characters(),
-            self,
+        whether to change every tag for name), or None if cancelled."""
+        return self._pick_character(
             title="Change Character",
             message=f"Change {voice_tag(name)} to:",
             ok_text="Change",
-            accept_check=adopt,
             option_text=f"Change every {voice_tag(name)} in the document",
         )
-        accepted = dialog.exec() == QDialog.DialogCode.Accepted
-        everywhere = dialog.option_check.isChecked()
-        dialog.deleteLater()
-        if not accepted or not chosen:
-            return None
-        return chosen[-1], everywhere
 
     def _insert_pause(self) -> None:
         seconds, ok = QInputDialog.getDouble(
@@ -1121,20 +1113,11 @@ class MainWindow(QMainWindow):
         menu.addAction(self._choose_character_action)
 
     def _choose_character(self) -> None:
-        dialog = CharacterPickerDialog(
-            self.panel.cast_name(), self.panel.characters(), self
-        )
-        accepted = dialog.exec() == QDialog.DialogCode.Accepted
-        choice = dialog.choice()
-        dialog.deleteLater()
-        if not accepted or choice is None:
-            return
-        cast, name = choice
-        # Only the current cast's characters reach the server, so a pick
-        # from another cast switches to it.
-        if cast is not None and not self.panel.switch_cast(cast):
-            return
-        self._insert_named_tag(name)
+        """Alt+0: insert the tag of a character picked from any cast,
+        importing it into the current cast if it's from another."""
+        picked = self._pick_character()
+        if picked is not None:
+            self._insert_named_tag(picked[0])
 
     def _on_render_clicked(self) -> None:
         text = self._prepare_speech()

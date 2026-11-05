@@ -93,8 +93,9 @@ To insert a character's tag at the cursor:
 - drag the character's row onto the editor;
 - press **Alt+1** to **Alt+9** for the first nine characters (also listed
   under **Edit → Insert Character Tag**);
-- press **Alt+0** to pick a character from any cast (picking from another
-  cast switches to it); it remembers the last character picked in each cast.
+- press **Alt+0** to pick a character from any cast (picking one from
+  another cast offers to import it into the current cast); it remembers the
+  last character picked in each cast.
 
 Renaming a character renames its tags in the open document, as a single undo
 step.
