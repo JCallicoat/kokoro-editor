@@ -450,3 +450,26 @@ def test_voice_column_text_is_padded():
     assert text.left() == cell.left() + VOICE_PADDING
     assert text.right() == cell.right() - VOICE_PADDING
     assert text.height() == cell.height()
+
+
+def test_delete_key_removes_the_selected_character(window, boxes):
+    from PySide6.QtTest import QTest
+
+    panel = window.panel
+    panel.set_characters([Character("bob"), Character("eve")])
+    panel.set_collapsed(False)
+    window.show()
+    window.activateWindow()
+    QTest.qWaitForWindowExposed(window)
+    panel.table.setFocus()
+    panel.table.selectRow(0)
+    boxes.answers = [Btn.Yes]
+    QTest.keyClick(panel.table, Qt.Key.Key_Delete)
+    assert boxes.last == "Remove bob?"
+    assert names(panel) == ["eve"]
+    # Elsewhere, Delete keeps its usual meaning.
+    window.text_edit.setPlainText("ab")
+    window.text_edit.setFocus()
+    QTest.keyClick(window.text_edit, Qt.Key.Key_Delete)
+    assert window.text_edit.toPlainText() == "b"
+    assert names(panel) == ["eve"]

@@ -76,7 +76,7 @@ character has:
   editors; tag text is black or white, whichever reads better.
 
 Use **Add** to create one, double-click a row or press Enter to edit it, and
-**Remove** to delete it (you're warned if the document still uses it). Reorder
+**Remove** (or Delete) to delete it (you're warned if the document still uses it). Reorder
 characters with the arrow buttons or by dragging rows within the table. Hover
 over a row to see the character's full voice mix and rate.
 
@@ -227,6 +227,7 @@ sessions.
 | Save the current cast            | Alt+S             |
 | Highlight tags on / off          | Alt+Z             |
 | Edit the selected character      | Enter (in panel)  |
+| Remove the selected character    | Delete (in panel) |
 
 ## Development
 

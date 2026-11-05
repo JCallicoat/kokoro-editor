@@ -23,6 +23,7 @@ from PySide6.QtGui import (
     QColor,
     QCursor,
     QGuiApplication,
+    QKeySequence,
     QPainter,
 )
 from PySide6.QtNetwork import (
@@ -641,6 +642,15 @@ class PanelWidget(QWidget):
         self._enter_action.setShortcut(Qt.Key.Key_Return)
         self._enter_action.triggered.connect(self._on_enter)
         self.addAction(self._enter_action)
+        # Delete removes the selected character, only while the table has
+        # focus, so Delete keeps its meaning everywhere else.
+        self._delete_action = QAction(self.table)
+        self._delete_action.setShortcut(QKeySequence.StandardKey.Delete)
+        self._delete_action.setShortcutContext(
+            Qt.ShortcutContext.WidgetShortcut
+        )
+        self._delete_action.triggered.connect(self._on_remove)
+        self.table.addAction(self._delete_action)
         content_layout.addLayout(button_row)
         content_layout.addWidget(self.table, 1)
 
