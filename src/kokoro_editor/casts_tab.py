@@ -100,6 +100,7 @@ class ConflictDialog(QDialog):
         character: Character,
         cast: str,
         taken_names: list[str],
+        allow_apply_all: bool = True,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -121,6 +122,13 @@ class ConflictDialog(QDialog):
         )
         self.rename_edit.setEnabled(False)
         self.rename_check.toggled.connect(self._on_rename_toggled)
+        self.apply_all_check = QCheckBox(
+            "Do the same for the remaining conflicts"
+        )
+        self.apply_all_check.setToolTip(
+            "Renamed characters get the next free numbered name"
+        )
+        self.apply_all_check.setVisible(allow_apply_all)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
@@ -135,6 +143,7 @@ class ConflictDialog(QDialog):
         layout.addWidget(self.overwrite_radio)
         layout.addWidget(self.rename_check)
         layout.addWidget(self.rename_edit)
+        layout.addWidget(self.apply_all_check)
         layout.addWidget(buttons)
 
     def _on_rename_toggled(self, checked: bool) -> None:
@@ -163,6 +172,45 @@ class ConflictDialog(QDialog):
             self.rename_edit.setFocus()
             return
         super().accept()
+
+
+class ConflictResolver:
+    """A resolve function for merge_characters that asks with
+    ConflictDialog, then answers by itself once a choice is made for all
+    remaining conflicts. Cancel skips just that character."""
+
+    def __init__(
+        self,
+        cast: str,
+        parent: QWidget | None = None,
+        allow_apply_all: bool = True,
+    ) -> None:
+        self._cast = cast
+        self._parent = parent
+        self._allow_apply_all = allow_apply_all
+        self._for_all: str | None = None
+        self.cancelled = False  # whether the last conflict was cancelled
+
+    def __call__(
+        self, character: Character, taken: list[str]
+    ) -> tuple[str, str]:
+        if self._for_all == "rename":
+            return "rename", _free_character_name(character.name, taken)
+        if self._for_all is not None:
+            return self._for_all, ""
+        dialog = ConflictDialog(
+            character, self._cast, taken, self._allow_apply_all, self._parent
+        )
+        accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        resolution = dialog.resolution()
+        apply_all = dialog.apply_all_check.isChecked()
+        dialog.deleteLater()
+        self.cancelled = not accepted
+        if not accepted:
+            return "skip", ""
+        if apply_all:
+            self._for_all = resolution[0]
+        return resolution
 
 
 class InsertCharactersDialog(QDialog):
@@ -361,15 +409,6 @@ class CastsTab(QWidget):
         unsaved changes. False if the user cancelled."""
         return cast != self._panel.cast_name() or self._panel.maybe_save_cast()
 
-    def _resolve(
-        self, character: Character, cast: str, taken: list[str]
-    ) -> tuple[str, str]:
-        dialog = ConflictDialog(character, cast, taken, self)
-        accepted = dialog.exec() == QDialog.DialogCode.Accepted
-        resolution = dialog.resolution()
-        dialog.deleteLater()
-        return resolution if accepted else ("skip", "")
-
     def _merge(
         self,
         cast: str,
@@ -382,7 +421,7 @@ class CastsTab(QWidget):
         merged, report = merge_characters(
             load_casts().get(cast, []),
             incoming,
-            lambda character, taken: self._resolve(character, cast, taken),
+            ConflictResolver(cast, self),
         )
         save_cast(cast, merged)
         self._panel.casts_changed(cast)

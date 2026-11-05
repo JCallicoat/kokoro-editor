@@ -3,6 +3,7 @@ referred to in the text with [voice:name] tags."""
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -174,6 +175,82 @@ def merge_characters(
         else:
             report.skipped.append(character.name)
     return result, report
+
+
+def count_voice_tags(text: str, name: str) -> int:
+    return len(re.findall(voice_tag_pattern(name), text, re.IGNORECASE))
+
+
+def strip_voice_tags(text: str, names: list[str]) -> str:
+    """text without the tags for names, nor the spaces after them, so
+    removing a tag doesn't leave a double space or join two lines."""
+    for name in names:
+        text = re.sub(
+            voice_tag_pattern(name) + r"[ \t]*", "", text, flags=re.IGNORECASE
+        )
+    return text
+
+
+# -- what the server accepts in a tag --------------------------------------- #
+# Kokoro-FastAPI also accepts these OpenAI voice names, mapped to its own
+# voices; they aren't in its voice list (openai_mappings.json).
+OPENAI_VOICE_NAMES = frozenset(
+    "alloy ash coral echo fable onyx nova sage shimmer".split()
+)
+# Mirrors _VOICE_WEIGHT_PATTERN in Kokoro-FastAPI's openai_compatible.py.
+_MIX_ITEM_PATTERN = re.compile(r"(?P<name>[^()]+)(?:\((?P<weight>[^()]*)\))?")
+
+
+def is_voice_mix(text: str, voices: list[str] | None) -> bool:
+    """Whether the server would take text as a voice or a mix of voices,
+    following its process_and_validate_voices: items joined by + or -,
+    each a voice name with an optional positive weight in parentheses.
+
+    voices is the server's voice list; with None (not loaded) only the
+    form is checked, so a valid mix is never mistaken for an unknown one.
+    """
+    mix = text.replace(" ", "").strip()
+    if not mix or mix[0] in "+-" or mix[-1] in "+-":
+        return False
+    if re.search(r"[+-]{2,}", mix):
+        return False
+    for item in re.split(r"[+-]", mix):
+        match = _MIX_ITEM_PATTERN.fullmatch(item)
+        if not match:
+            return False
+        weight = match.group("weight")
+        if weight is not None:
+            try:
+                value = float(weight)
+            except ValueError:
+                return False
+            if not math.isfinite(value) or value <= 0:
+                return False
+        name = match.group("name").strip()
+        if (
+            voices is not None
+            and name not in voices
+            and name not in OPENAI_VOICE_NAMES
+        ):
+            return False
+    return True
+
+
+def unknown_tag_names(
+    text: str, characters: list[Character], voices: list[str] | None
+) -> list[str]:
+    """Names in text's tags that are neither characters (ignoring case,
+    as the server matches aliases) nor voice mixes the server accepts.
+    Each name is listed once, as first written."""
+    names = {c.name.casefold() for c in characters}
+    found: dict[str, str] = {}
+    for match in VOICE_TAG_PATTERN.finditer(text):
+        name = match.group(1).strip()
+        key = name.casefold()
+        if key in found or key in names or is_voice_mix(name, voices):
+            continue
+        found[key] = name
+    return list(found.values())
 
 
 def unvoiced_tag_names(text: str, characters: list[Character]) -> list[str]:

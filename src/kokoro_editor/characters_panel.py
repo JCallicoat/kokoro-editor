@@ -318,12 +318,15 @@ class CharacterDialog(QDialog):
 
 
 class CharacterPickerDialog(QDialog):
-    """Pick a character to insert the tag of, from any cast.
+    """Pick a character from any cast, by default to insert its tag.
 
     It opens on the current cast, showing its unsaved edits, and in each
-    cast selects the character last picked there. Picking from another
-    cast is meant to switch to it, since only the current cast's
-    characters are sent to the server.
+    cast selects the character last picked there. Only the current cast's
+    characters are sent to the server, so a pick from another cast needs
+    the caller to switch to that cast or import the character.
+
+    accept_check(choice), if given, can refuse a pick to keep the dialog
+    open; message, ok_text and cancel_text adapt it to other uses.
     """
 
     def __init__(
@@ -331,10 +334,16 @@ class CharacterPickerDialog(QDialog):
         current_cast: str | None,
         current_characters: list[Character],
         parent: QWidget | None = None,
+        title: str = "Insert Character Tag",
+        message: str = "",
+        ok_text: str = "",
+        cancel_text: str = "",
+        accept_check: Callable[[tuple[str | None, str]], bool] | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Insert Character Tag")
+        self.setWindowTitle(title)
         self.setMinimumWidth(260)
+        self._accept_check = accept_check
         # Keyed by cast name; "" is a current cast that hasn't been saved.
         self._casts = load_casts()
         current_key = current_cast if current_cast is not None else ""
@@ -355,10 +364,22 @@ class CharacterPickerDialog(QDialog):
         )
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
+        if ok_text:
+            self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText(
+                ok_text
+            )
+        if cancel_text:
+            self.buttons.button(
+                QDialogButtonBox.StandardButton.Cancel
+            ).setText(cancel_text)
 
         form = QFormLayout()
         form.addRow("Cast:", self.cast_box)
         layout = QVBoxLayout(self)
+        if message:
+            label = QLabel(message)
+            label.setWordWrap(True)
+            layout.addWidget(label)
         layout.addLayout(form)
         layout.addWidget(self.character_list, 1)
         layout.addWidget(self.buttons)
@@ -404,6 +425,8 @@ class CharacterPickerDialog(QDialog):
         choice = self.choice()
         if choice is None:
             return
+        if self._accept_check is not None and not self._accept_check(choice):
+            return
         save_last_character(choice[0] or "", choice[1])
         super().accept()
 
@@ -441,6 +464,9 @@ class PanelWidget(QWidget):
         self._cast_name: str | None = None  # None: not saved as a cast yet
         self._saved_characters: list[Character] = []
         self._voices: list[str] = []
+        # How often a character is tagged in the document, to warn before
+        # removing one still in use; set by the main window.
+        self._tag_counter: Callable[[str], int] = lambda _name: 0
         self._reply: QNetworkReply | None = None
 
         # Main layout
@@ -653,6 +679,19 @@ class PanelWidget(QWidget):
         selected = self.table.selectionModel().hasSelection() and row >= 0
         self.up_btn.setEnabled(selected and row > 0)
         self.down_btn.setEnabled(selected and row < len(self._characters) - 1)
+
+    def set_tag_counter(self, counter: Callable[[str], int]) -> None:
+        self._tag_counter = counter
+
+    def voices(self) -> list[str] | None:
+        """The server's voices, or None if they haven't loaded."""
+        return list(self._voices) or None
+
+    def set_characters(self, characters: list[Character]) -> None:
+        """Replace the current cast's characters, leaving it unsaved."""
+        self._characters = list(characters)
+        self._refresh_table()
+        self.characters_changed.emit()
 
     def character_named(self, name: str) -> Character | None:
         for character in self._characters:
@@ -891,10 +930,19 @@ class PanelWidget(QWidget):
         character = self.selected_character()
         if character is None:
             return
+        question = f"Remove {character.name}?"
+        uses = self._tag_counter(character.name)
+        if uses:
+            times = "once" if uses == 1 else f"{uses} times"
+            question = (
+                f"{character.name} is tagged {times} in the document. "
+                "Those tags won't speak until they're replaced, which Play "
+                "and Render will offer to do.\n\n" + question
+            )
         answer = QMessageBox.question(
             self,
             "Remove Character",
-            f"Remove {character.name}?",
+            question,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )

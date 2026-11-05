@@ -34,8 +34,13 @@ from PySide6.QtWidgets import (
 
 from kokoro_editor import audio
 from kokoro_editor.audio import PCMPlayer
+from kokoro_editor.casts_tab import ConflictResolver
 from kokoro_editor.characters import (
     Character,
+    count_voice_tags,
+    merge_characters,
+    strip_voice_tags,
+    unknown_tag_names,
     unvoiced_tag_names,
     voice_tag,
     voice_tag_pattern,
@@ -48,6 +53,7 @@ from kokoro_editor.settings import (
     add_recent_file,
     describe_http_error,
     fmt_time,
+    load_casts,
     load_last_dir,
     load_recent_files,
     load_window_geometry,
@@ -151,6 +157,9 @@ class MainWindow(QMainWindow):
             self.settings, self._nam, self._on_preview_active, self
         )
         self.panel.character_renamed.connect(self._rename_voice_tags)
+        self.panel.set_tag_counter(
+            lambda name: count_voice_tags(self.text_edit.toPlainText(), name)
+        )
         self.text_edit.character_dropped.connect(self._insert_named_tag)
 
         top = QHBoxLayout()
@@ -244,6 +253,9 @@ class MainWindow(QMainWindow):
         )
         self.panel.characters_changed.connect(self._update_insert_tag_menu)
         self._update_insert_tag_menu()
+        edit_menu.addAction(
+            self._action("&Validate Document Tags", self._validate_tags)
+        )
 
         view_menu = bar.addMenu("&View")
         self.panel_action = self._action(
@@ -513,11 +525,35 @@ class MainWindow(QMainWindow):
             return cursor.selectedText().replace("\u2029", "\n").strip()
         return self.text_edit.toPlainText().strip()
 
-    def _ready_to_speak(self, text: str) -> bool:
+    def _prepare_speech(self) -> str | None:
+        """The text Play and Render send, once its voice tags check out,
+        or None to send nothing.
+
+        The server rejects a whole request over one tag it can't resolve,
+        so unknown tags are offered for replacement, and any left are
+        removed from what's sent (the document keeps them).
+        """
+        text = self._text_to_speak()
+        unknown = self._unknown_tags(text)
+        if unknown:
+            if self._ask_replace_unknown(unknown, sending=True):
+                self._replace_unknown_tags(unknown)
+                text = self._text_to_speak()
+                unknown = self._unknown_tags(text)
+            text = strip_voice_tags(text, unknown).strip()
         if not text:
             self.status_label.setText("Nothing to speak.")
-            return False
-        # The server rejects the whole request over a tag it can't resolve.
+            return None
+        if not self._check_voiced(text):
+            return None
+        if not self.settings.voice_string:
+            self.status_label.setText("Choose a voice first.")
+            self._open_settings()
+        return text if self.settings.voice_string else None
+
+    def _check_voiced(self, text: str) -> bool:
+        """Warn about tagged characters still without a voice, which the
+        server can't speak. False if there are any."""
         unvoiced = unvoiced_tag_names(text, self.panel.characters())
         if unvoiced:
             QMessageBox.warning(
@@ -526,15 +562,130 @@ class MainWindow(QMainWindow):
                 "Choose a voice for these characters before speaking:\n\n"
                 + ", ".join(unvoiced),
             )
-            return False
-        if not self.settings.voice_string:
-            self.status_label.setText("Choose a voice first.")
-            self._open_settings()
-        return bool(self.settings.voice_string)
+        return not unvoiced
+
+    # -- voice tag checks ---------------------------------------------------- #
+    def _unknown_tags(self, text: str) -> list[str]:
+        return unknown_tag_names(
+            text, self.panel.characters(), self.panel.voices()
+        )
+
+    def _validate_tags(self) -> None:
+        """Edit > Validate Document Tags: the checks Play and Render make,
+        for the whole document."""
+        unknown = self._unknown_tags(self.text_edit.toPlainText())
+        if unknown and self._ask_replace_unknown(unknown, sending=False):
+            self._replace_unknown_tags(unknown)
+            unknown = self._unknown_tags(self.text_edit.toPlainText())
+        if unknown:
+            self.status_label.setText(
+                f"{len(unknown)} unknown voice tag name(s) left: "
+                + ", ".join(unknown)
+            )
+        elif self._check_voiced(self.text_edit.toPlainText()):
+            QMessageBox.information(
+                self, "Validate Document Tags", "All voice tags are valid."
+            )
+
+    def _ask_replace_unknown(self, names: list[str], sending: bool) -> bool:
+        tags = "\n".join(voice_tag(name) for name in names)
+        consequence = (
+            "If not, they're left out of what's sent to the server."
+            if sending
+            else "If not, they're left as they are."
+        )
+        answer = QMessageBox.question(
+            self,
+            "Unknown voice tags",
+            "These voice tags aren't characters in the current cast or "
+            f"Kokoro voices:\n\n{tags}\n\nReplace them with characters? "
+            + consequence,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
+    def _replace_unknown_tags(self, names: list[str]) -> None:
+        """Ask for a character to stand in for each unknown tag name, and
+        replace its tags throughout the document. Skipped ones stay."""
+        for name in names:
+            replacement: list[str] = []
+
+            def adopt(choice: tuple[str | None, str]) -> bool:
+                adopted = self._adopt_character(*choice)
+                if adopted is not None:
+                    replacement.append(adopted)
+                return adopted is not None
+
+            dialog = CharacterPickerDialog(
+                self.panel.cast_name(),
+                self.panel.characters(),
+                self,
+                title="Replace Voice Tag",
+                message=f"Replace every {voice_tag(name)} in the document "
+                "with:",
+                ok_text="Replace",
+                cancel_text="Skip",
+                accept_check=adopt,
+            )
+            accepted = dialog.exec() == QDialog.DialogCode.Accepted
+            dialog.deleteLater()
+            if accepted and replacement:
+                count = self._replace_voice_tags(name, replacement[0])
+                self.status_label.setText(
+                    f"Replaced {count} {voice_tag(name)} with "
+                    f"{voice_tag(replacement[0])}."
+                )
+
+    def _adopt_character(self, cast: str | None, name: str) -> str | None:
+        """The name to tag for a character picked from cast, importing it
+        into the current cast first if it's from another one. None if the
+        user declines, keeping the picker open."""
+        if cast == self.panel.cast_name():
+            return name
+        current = self.panel.cast_name() or "the current cast"
+        answer = QMessageBox.question(
+            self,
+            "Import Character",
+            f"{name} is in the cast {cast}. Import it into {current} so its "
+            "tags can be spoken?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        character = next(
+            (c for c in load_casts().get(cast or "", []) if c.name == name),
+            None,
+        )
+        if answer != QMessageBox.StandardButton.Yes or character is None:
+            return None
+        resolver = ConflictResolver(
+            self.panel.cast_name() or "(unsaved)", self, allow_apply_all=False
+        )
+        merged, report = merge_characters(
+            self.panel.characters(), [character], resolver
+        )
+        if resolver.cancelled:
+            return None
+        self.panel.set_characters(merged)
+        if report.renamed:
+            return report.renamed[0]
+        # Added, overwritten, or kept: the current cast's one answers to it.
+        existing = next(
+            c for c in merged if c.name.casefold() == character.name.casefold()
+        )
+        return existing.name
 
     def _rename_voice_tags(self, old: str, new: str) -> None:
-        """Point the document's tags for a renamed character at its new
-        name, as a single undo step."""
+        count = self._replace_voice_tags(old, new)
+        if count:
+            tags = "tag" if count == 1 else "tags"
+            self.status_label.setText(
+                f"Renamed {count} {tags} from {old} to {new}."
+            )
+
+    def _replace_voice_tags(self, old: str, new: str) -> int:
+        """Point the document's tags for old at new, as a single undo step.
+        Returns how many were replaced."""
         document = self.text_edit.document()
         pattern = QRegularExpression(
             voice_tag_pattern(old),
@@ -551,11 +702,7 @@ class MainWindow(QMainWindow):
             count += 1
             found = document.find(pattern, found.position())
         block.endEditBlock()
-        if count:
-            tags = "tag" if count == 1 else "tags"
-            self.status_label.setText(
-                f"Renamed {count} {tags} from {old} to {new}."
-            )
+        return count
 
     def insert_voice_tag(self, character: Character) -> None:
         """Insert character's [voice:...] tag at the cursor (the start of
@@ -632,8 +779,8 @@ class MainWindow(QMainWindow):
         self._insert_named_tag(name)
 
     def _on_render_clicked(self) -> None:
-        text = self._text_to_speak()
-        if not self._ready_to_speak(text):
+        text = self._prepare_speech()
+        if text is None:
             return
         stem = UNTITLED
         if self._path:
@@ -674,8 +821,8 @@ class MainWindow(QMainWindow):
                 f"{audio.SD_ERROR}",
             )
             return
-        text = self._text_to_speak()
-        if not self._ready_to_speak(text):
+        text = self._prepare_speech()
+        if text is None:
             return
 
         s = self.settings
