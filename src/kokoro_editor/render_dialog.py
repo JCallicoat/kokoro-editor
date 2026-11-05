@@ -65,7 +65,7 @@ class RenderDialog(QDialog):
         base_path: str,
         selection: bool,
         nam: QNetworkAccessManager,
-        voice_aliases: dict[str, str],
+        voice_aliases: dict[str, str | dict],
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)

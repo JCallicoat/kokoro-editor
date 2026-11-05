@@ -7,21 +7,25 @@ import json
 from collections.abc import Callable
 
 from PySide6.QtCore import (
+    QEvent,
     QModelIndex,
+    QObject,
     QPersistentModelIndex,
     QSize,
     Qt,
     Signal,
 )
-from PySide6.QtGui import QAction, QCursor, QPainter
+from PySide6.QtGui import QAction, QCursor, QGuiApplication, QPainter
 from PySide6.QtNetwork import (
     QNetworkAccessManager,
     QNetworkReply,
 )
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
     QFormLayout,
     QHBoxLayout,
     QHeaderView,
@@ -41,7 +45,10 @@ from PySide6.QtWidgets import (
 )
 
 from kokoro_editor.characters import (
+    MAX_RATE,
+    MIN_RATE,
     Character,
+    clamp_rate,
     name_error,
     voice_aliases,
 )
@@ -105,15 +112,75 @@ class _VoiceItemDelegate(QStyledItemDelegate):
         height = max(rect.height(), option.rect.height())
         return QSize(option.rect.width(), height)
 
-    def helpEvent(self, event, _widget, option, index) -> bool:
-        text = index.data(Qt.ItemDataRole.DisplayRole) or ""
-        if text:
-            QToolTip.showText(QCursor.pos(), text, option.widget)
-        return True
+
+class _RateSpinBox(QDoubleSpinBox):
+    """Rate spin box whose tooltip gives more detail, including the
+    effective pace, while Shift is held."""
+
+    def __init__(
+        self,
+        speed_fn: Callable[[], float],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._speed_fn = speed_fn
+        self.setRange(MIN_RATE, MAX_RATE)
+        self.setSingleStep(0.05)
+        self.setDecimals(2)
+        self.setSuffix("×")
+
+    def _tooltip(self, detailed: bool) -> str:
+        brief = (
+            "How fast the character speaks, relative to the speed in Settings."
+        )
+        if not detailed:
+            return f"{brief}\nHold Shift for more."
+        speed = self._speed_fn()
+        effective = clamp_rate(speed * self.value())
+        return (
+            f"{brief}\n\n"
+            f"At the current speed of {speed:.2f}×, this character speaks "
+            f"at about {effective:.2f}×.\n"
+            "It applies at each of the character's [voice:] tags; [rate:] "
+            "tags in the text scale it further."
+        )
+
+    def _show_tooltip(self) -> None:
+        detailed = bool(
+            QGuiApplication.queryKeyboardModifiers()
+            & Qt.KeyboardModifier.ShiftModifier
+        )
+        QToolTip.showText(QCursor.pos(), self._tooltip(detailed), self)
+
+    def event(self, event: QEvent) -> bool:
+        if event.type() == QEvent.Type.ToolTip:
+            self._show_tooltip()
+            return True
+        return super().event(event)
+
+    # Shift is watched application-wide while hovering, since key events
+    # only reach the box when it has focus.
+    def enterEvent(self, event) -> None:
+        QApplication.instance().installEventFilter(self)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        QApplication.instance().removeEventFilter(self)
+        super().leaveEvent(event)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if (
+            event.type() in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease)
+            and event.key() == Qt.Key.Key_Shift
+            and QToolTip.isVisible()
+        ):
+            self._show_tooltip()
+        return False
 
 
 class CharacterDialog(QDialog):
-    """Add or edit a character: a name and the voice mix it speaks with."""
+    """Add or edit a character: a name, the voice mix it speaks with and
+    its rate."""
 
     def __init__(
         self,
@@ -136,10 +203,19 @@ class CharacterDialog(QDialog):
         form = QFormLayout()
         form.addRow("Character:", self.name_edit)
 
+        self.rate_spin = _RateSpinBox(lambda: settings_fn().speed)
+        self.rate_spin.setValue(character.rate)
+        rate_form = QFormLayout()
+        rate_form.addRow("Rate:", self.rate_spin)
+
         # Voices are optional so characters can be jotted down quickly and
-        # given voices later.
+        # given voices later. The mix preview plays at the character's rate.
         self.voice_mix = VoiceMixWidget(
-            settings_fn, nam, on_preview_active, require_first=False
+            settings_fn,
+            nam,
+            on_preview_active,
+            require_first=False,
+            mix_rate_fn=self.rate_spin.value,
         )
         self.voice_mix.set_choices(voices)
         self.voice_mix.set_mix(*parse_voice_string(character.voice))
@@ -154,11 +230,15 @@ class CharacterDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addLayout(form)
         layout.addWidget(self.voice_mix)
+        layout.addLayout(rate_form)
         layout.addWidget(buttons)
 
     def character(self) -> Character:
         return Character(
-            self.name_edit.text().strip(), self.voice_mix.voice_string()
+            self.name_edit.text().strip(),
+            self.voice_mix.voice_string(),
+            # The spin box holds 2 decimals; round off float noise.
+            round(self.rate_spin.value(), 2),
         )
 
     def accept(self) -> None:
@@ -342,7 +422,7 @@ class PanelWidget(QWidget):
     def characters(self) -> list[Character]:
         return list(self._characters)
 
-    def voice_aliases(self) -> dict[str, str]:
+    def voice_aliases(self) -> dict[str, str | dict]:
         return voice_aliases(self._characters)
 
     def selected_character(self) -> Character | None:
@@ -359,6 +439,8 @@ class PanelWidget(QWidget):
                 item.setTextAlignment(
                     Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
                 )
+                # Either cell shows the whole character, rate included.
+                item.setToolTip(character.tooltip())
                 self.table.setItem(row, column, item)
         self.table.resizeRowsToContents()
 

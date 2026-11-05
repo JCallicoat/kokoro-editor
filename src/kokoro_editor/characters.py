@@ -15,10 +15,36 @@ VOICE_TAG_PATTERN = re.compile(
 )
 
 
+# Kokoro-FastAPI's limits for speed and rates.
+MIN_RATE = 0.25
+MAX_RATE = 4.0
+
+
 @dataclass
 class Character:
     name: str
     voice: str = ""  # a voice mix string; "" until one is chosen
+    # Multiplies the request speed whenever the character speaks. The server
+    # reapplies it at each of the character's [voice:] tags.
+    rate: float = 1.0
+
+    def alias_value(self) -> str | dict:
+        """The character's voice_aliases entry: the plain mix, or the mix
+        with its rate, as the server and its web UI's cast files use."""
+        if self.rate == 1.0:
+            return self.voice
+        return {"voice": self.voice, "rate": self.rate}
+
+    def tooltip(self) -> str:
+        return (
+            f"{self.name}\n"
+            f"Voice: {self.voice or '(none)'}\n"
+            f"Rate: {self.rate:.2f}×"
+        )
+
+
+def clamp_rate(rate: float) -> float:
+    return min(max(rate, MIN_RATE), MAX_RATE)
 
 
 def name_error(name: str, other_names: list[str]) -> str | None:
@@ -49,10 +75,10 @@ def voice_tag_pattern(name: str) -> str:
     return rf"\[voice:\s*{re.escape(name)}\s*\]"
 
 
-def voice_aliases(characters: list[Character]) -> dict[str, str]:
+def voice_aliases(characters: list[Character]) -> dict[str, str | dict]:
     """The voice_aliases request field. Characters without a voice are left
     out, since the server rejects an alias with an empty mix."""
-    return {c.name: c.voice for c in characters if c.voice}
+    return {c.name: c.alias_value() for c in characters if c.voice}
 
 
 def unvoiced_tag_names(text: str, characters: list[Character]) -> list[str]:

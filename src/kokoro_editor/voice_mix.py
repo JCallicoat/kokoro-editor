@@ -36,6 +36,7 @@ from kokoro_editor.settings import (
 )
 
 POLL_INTERVAL_MS = 200
+PREVIEW_ALIAS = "kokoro_editor_preview"
 
 
 def _set_button_icon(
@@ -71,11 +72,14 @@ class VoicePreview(QObject):
         self._timer.setInterval(POLL_INTERVAL_MS)
         self._timer.timeout.connect(self._poll)
 
-    def toggle(self, text: str, voice: str, button: QPushButton) -> None:
-        """Play voice from button, or stop if button's preview is playing."""
+    def toggle(
+        self, text: str, voice: str, button: QPushButton, rate: float = 1.0
+    ) -> None:
+        """Play voice from button, or stop if button's preview is playing.
+        rate is a character's rate, applied on top of the speed setting."""
         restart = button is not self._button
         self._halt()
-        if restart and voice and self._start(text, voice):
+        if restart and voice and self._start(text, voice, rate):
             self._button = button
             _set_button_icon(button, QStyle.StandardPixmap.SP_MediaStop)
         else:
@@ -85,7 +89,7 @@ class VoicePreview(QObject):
         self._halt()
         self._set_active(False)
 
-    def _start(self, text: str, voice: str) -> bool:
+    def _start(self, text: str, voice: str, rate: float) -> bool:
         if audio.sd is None:
             return False
         s = self._settings_fn()
@@ -95,7 +99,15 @@ class VoicePreview(QObject):
         except Exception:
             return False
         self._set_active(True)
-        payload = speech_payload(s, text, "pcm", stream=True, voice=voice)
+        aliases = None
+        if rate != 1.0:
+            # Speak through a throwaway alias so the server applies the rate
+            # exactly as it does for a character during playback.
+            aliases = {PREVIEW_ALIAS: {"voice": voice, "rate": rate}}
+            voice = PREVIEW_ALIAS
+        payload = speech_payload(
+            s, text, "pcm", stream=True, voice=voice, voice_aliases=aliases
+        )
         request = speech_request(s.base_url, REQUEST_INACTIVITY_TIMEOUT_MS)
         reply = self._nam.post(
             request, QByteArray(json.dumps(payload).encode("utf-8"))
@@ -161,7 +173,8 @@ class VoiceMixWidget(QGroupBox):
     string, and preview buttons for each voice and for the whole mix.
 
     With require_first=False every slot, including the first, offers
-    "(none)", so the mix can be left empty and decided later.
+    "(none)", so the mix can be left empty and decided later. mix_rate_fn
+    gives a character's rate for the mix preview to play at.
     """
 
     def __init__(
@@ -170,12 +183,14 @@ class VoiceMixWidget(QGroupBox):
         nam: QNetworkAccessManager,
         on_preview_active: Callable[[bool], None],
         require_first: bool = True,
+        mix_rate_fn: Callable[[], float] = lambda: 1.0,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__("Voice mix", parent)
         self._preview = VoicePreview(settings_fn, nam, on_preview_active, self)
         self._names: list[str] = []
         self._require_first = require_first
+        self._mix_rate_fn = mix_rate_fn
 
         self.voice_boxes = [QComboBox() for _ in range(VOICE_SLOTS)]
         self.weight_boxes = [QComboBox() for _ in range(VOICE_SLOTS)]
@@ -276,6 +291,7 @@ class VoiceMixWidget(QGroupBox):
             "Hello! I am the mixed voice provided by the kokoro API. This is how I sound.",
             self.voice_string(),
             button,
+            round(self._mix_rate_fn(), 2),
         )
 
     def hideEvent(self, event) -> None:

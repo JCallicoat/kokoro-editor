@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 
 from PySide6.QtCore import QByteArray, QSettings, QUrl
 from PySide6.QtGui import QFont, QGuiApplication
 from PySide6.QtNetwork import QNetworkRequest
 
-from kokoro_editor.characters import Character
+from kokoro_editor.characters import Character, clamp_rate
 
 VOICE_SLOTS = 3
 MAX_VOICE_WEIGHT = 10
@@ -190,16 +190,29 @@ def load_casts() -> dict[str, list[Character]]:
         if not isinstance(cast, dict) or not cast.get("name"):
             continue
         casts[str(cast["name"])] = [
-            Character(str(c["name"]), str(c.get("voice", "")))
+            Character(str(c["name"]), str(c.get("voice", "")), _load_rate(c))
             for c in cast.get("characters", [])
             if isinstance(c, dict) and c.get("name")
         ]
     return casts
 
 
+def _load_rate(character: dict) -> float:
+    try:
+        return clamp_rate(float(character.get("rate", 1.0)))
+    except (TypeError, ValueError):
+        return 1.0
+
+
 def save_casts(casts: dict[str, list[Character]]) -> None:
+    def saved(c: Character) -> dict:
+        # The default rate is left out, as in the server's cast files.
+        if c.rate == 1.0:
+            return {"name": c.name, "voice": c.voice}
+        return {"name": c.name, "voice": c.voice, "rate": c.rate}
+
     data = [
-        {"name": name, "characters": [asdict(c) for c in characters]}
+        {"name": name, "characters": [saved(c) for c in characters]}
         for name, characters in casts.items()
     ]
     s = QSettings()
@@ -235,7 +248,7 @@ def speech_payload(
     response_format: str,
     stream: bool,
     voice: str | None = None,
-    voice_aliases: dict[str, str] | None = None,
+    voice_aliases: dict[str, str | dict] | None = None,
 ) -> dict:
     """JSON body for /v1/audio/speech, shared by playback and rendering."""
     payload = {
