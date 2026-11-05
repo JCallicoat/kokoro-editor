@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "kokoro-editor"
-version = "1.0.0"
+version = "1.0.1"
 description = "A simple text editor with built-in Kokoro text-to-speech playback"
 readme = "README.md"
 license = "MIT"
