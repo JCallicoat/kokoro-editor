@@ -234,6 +234,24 @@ def delete_cast(name: str) -> None:
     save_casts(casts)
 
 
+def load_last_characters() -> dict[str, str]:
+    """The character last picked in each cast, by cast name ("" for a cast
+    not saved yet)."""
+    try:
+        data = json.loads(QSettings().value("last_characters", "{}", type=str))
+    except ValueError:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): str(v) for k, v in data.items()}
+
+
+def save_last_character(cast: str, character: str) -> None:
+    picks = load_last_characters()
+    picks[cast] = character
+    QSettings().setValue("last_characters", json.dumps(picks))
+
+
 def load_last_cast() -> str:
     return QSettings().value("last_cast", "", type=str)
 

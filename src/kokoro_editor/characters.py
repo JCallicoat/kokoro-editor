@@ -15,6 +15,10 @@ VOICE_TAG_PATTERN = re.compile(
 )
 
 
+# Drag and drop format carrying a character's name, so the editor can
+# insert its tag the same way the shortcuts do.
+CHARACTER_MIME_TYPE = "application/x-kokoro-editor-character"
+
 # Kokoro-FastAPI's limits for speed and rates.
 MIN_RATE = 0.25
 MAX_RATE = 4.0

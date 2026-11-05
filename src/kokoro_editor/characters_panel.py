@@ -7,7 +7,9 @@ import json
 from collections.abc import Callable
 
 from PySide6.QtCore import (
+    QByteArray,
     QEvent,
+    QMimeData,
     QModelIndex,
     QObject,
     QPersistentModelIndex,
@@ -32,6 +34,8 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPushButton,
     QStyle,
@@ -45,21 +49,25 @@ from PySide6.QtWidgets import (
 )
 
 from kokoro_editor.characters import (
+    CHARACTER_MIME_TYPE,
     MAX_RATE,
     MIN_RATE,
     Character,
     clamp_rate,
     name_error,
     voice_aliases,
+    voice_tag,
 )
 from kokoro_editor.settings import (
     AppSettings,
     delete_cast,
     extract_voice_names,
     load_casts,
+    load_last_characters,
     parse_voice_string,
     save_cast,
     save_last_cast,
+    save_last_character,
     voices_request,
 )
 from kokoro_editor.voice_mix import VoiceMixWidget
@@ -111,6 +119,64 @@ class _VoiceItemDelegate(QStyledItemDelegate):
         )
         height = max(rect.height(), option.rect.height())
         return QSize(option.rect.width(), height)
+
+
+class _CharacterTable(QTableWidget):
+    """Character table whose rows can be dragged onto the editor (as the
+    character's name), into other apps (as its [voice:] tag), or within
+    the table to reorder them.
+
+    A row dropped on another row is meant to go above it, and below the
+    last row to the end; row_dropped(from_row, target_row) reports it,
+    target_row being rowCount() for the end, and the owner moves it.
+    """
+
+    row_dropped = Signal(int, int)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(0, 2, parent)
+        self.setDragEnabled(True)
+        self.setDragDropMode(QTableWidget.DragDropMode.DragDrop)
+        # Copy, so Qt never removes the dragged row itself.
+        self.setDefaultDropAction(Qt.DropAction.CopyAction)
+        self.setDropIndicatorShown(True)
+
+    # Only this table's own rows can be dropped here.
+    def dragEnterEvent(self, event) -> None:
+        if event.source() is self:
+            super().dragEnterEvent(event)
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event) -> None:
+        if event.source() is self:
+            super().dragMoveEvent(event)
+        else:
+            event.ignore()
+
+    def dropEvent(self, event) -> None:
+        from_row = self.currentRow()
+        if event.source() is not self or from_row < 0:
+            event.ignore()
+            return
+        target = self.rowAt(event.position().toPoint().y())
+        event.setDropAction(Qt.DropAction.CopyAction)
+        event.accept()
+        self.row_dropped.emit(
+            from_row, target if target >= 0 else self.rowCount()
+        )
+
+    def mimeTypes(self) -> list[str]:
+        return [CHARACTER_MIME_TYPE, "text/plain"]
+
+    def mimeData(self, items) -> QMimeData:
+        data = QMimeData()
+        if items:
+            name_item = self.item(items[0].row(), 0)
+            name = name_item.text() if name_item else ""
+            data.setData(CHARACTER_MIME_TYPE, QByteArray(name.encode()))
+            data.setText(voice_tag(name))
+        return data
 
 
 class _RateSpinBox(QDoubleSpinBox):
@@ -250,6 +316,97 @@ class CharacterDialog(QDialog):
         super().accept()
 
 
+class CharacterPickerDialog(QDialog):
+    """Pick a character to insert the tag of, from any cast.
+
+    It opens on the current cast, showing its unsaved edits, and in each
+    cast selects the character last picked there. Picking from another
+    cast is meant to switch to it, since only the current cast's
+    characters are sent to the server.
+    """
+
+    def __init__(
+        self,
+        current_cast: str | None,
+        current_characters: list[Character],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Insert Character Tag")
+        self.setMinimumWidth(260)
+        # Keyed by cast name; "" is a current cast that hasn't been saved.
+        self._casts = load_casts()
+        current_key = current_cast if current_cast is not None else ""
+        self._casts[current_key] = list(current_characters)
+        self._last_picks = load_last_characters()
+
+        self.cast_box = QComboBox()
+        if current_cast is None:
+            self.cast_box.addItem("(unsaved cast)", "")
+        for name in sorted(load_casts(), key=str.casefold):
+            self.cast_box.addItem(name, name)
+        self.character_list = QListWidget()
+        self.character_list.itemDoubleClicked.connect(self.accept)
+
+        self.buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+
+        form = QFormLayout()
+        form.addRow("Cast:", self.cast_box)
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(self.character_list, 1)
+        layout.addWidget(self.buttons)
+
+        self.cast_box.currentIndexChanged.connect(self._fill)
+        self.cast_box.setCurrentIndex(
+            max(self.cast_box.findData(current_key), 0)
+        )
+        self._fill()
+        # Typing jumps to a name and Enter picks it.
+        self.character_list.setFocus()
+
+    def _cast_key(self) -> str:
+        return self.cast_box.currentData() or ""
+
+    def _fill(self) -> None:
+        key = self._cast_key()
+        characters = self._casts.get(key, [])
+        self.character_list.clear()
+        for character in characters:
+            item = QListWidgetItem(character.name)
+            item.setToolTip(character.tooltip())
+            self.character_list.addItem(item)
+        names = [c.name for c in characters]
+        last = self._last_picks.get(key)
+        if names:
+            self.character_list.setCurrentRow(
+                names.index(last) if last in names else 0
+            )
+        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(
+            bool(names)
+        )
+
+    def choice(self) -> tuple[str | None, str] | None:
+        """(cast name, character name) picked, the cast being None for an
+        unsaved current cast; None if nothing is selected."""
+        item = self.character_list.currentItem()
+        if item is None:
+            return None
+        return self._cast_key() or None, item.text()
+
+    def accept(self) -> None:
+        choice = self.choice()
+        if choice is None:
+            return
+        save_last_character(choice[0] or "", choice[1])
+        super().accept()
+
+
 class PanelWidget(QWidget):
     """Collapsible side panel listing the characters, with Add/Remove buttons,
     above which the cast they belong to is picked, created, deleted and saved.
@@ -259,10 +416,11 @@ class PanelWidget(QWidget):
     """
 
     COLLAPSED_WIDTH = 30
-    EXPANDED_WIDTH = 220
+    EXPANDED_WIDTH = 260
 
     characters_changed = Signal()
     character_renamed = Signal(str, str)  # old name, new name
+    collapsed_changed = Signal(bool)
 
     def __init__(
         self,
@@ -345,7 +503,7 @@ class PanelWidget(QWidget):
         self.title_label = QLabel("Characters")
         self.title_label.setStyleSheet("font-weight: bold;")
         content_layout.addWidget(self.title_label)
-        self.table = QTableWidget(0, 2)
+        self.table = _CharacterTable()
         self.table.setHorizontalHeaderLabels(["Character", "Voice"])
         # Name column fits its widest cell; the voice column takes the rest.
         self.table.horizontalHeader().setSectionResizeMode(
@@ -375,10 +533,22 @@ class PanelWidget(QWidget):
         self.remove_btn.setIcon(
             style.standardIcon(QStyle.StandardPixmap.SP_DialogCloseButton)
         )
+        self.up_btn = self._icon_button(
+            QStyle.StandardPixmap.SP_ArrowUp, "Move character up"
+        )
+        self.down_btn = self._icon_button(
+            QStyle.StandardPixmap.SP_ArrowDown, "Move character down"
+        )
         button_row.addWidget(self.add_btn)
         button_row.addWidget(self.remove_btn)
+        button_row.addWidget(self.up_btn)
+        button_row.addWidget(self.down_btn)
         self.add_btn.clicked.connect(self._on_add)
         self.remove_btn.clicked.connect(self._on_remove)
+        self.up_btn.clicked.connect(lambda: self._move_selected(-1))
+        self.down_btn.clicked.connect(lambda: self._move_selected(+1))
+        self.table.row_dropped.connect(self._on_row_dropped)
+        self.table.itemSelectionChanged.connect(self._update_move_buttons)
         # Enter key on the panel opens the editor for the selected row
         self._enter_action = QAction(self)
         self._enter_action.setShortcut(Qt.Key.Key_Return)
@@ -387,7 +557,8 @@ class PanelWidget(QWidget):
         content_layout.addLayout(button_row)
 
         layout.addWidget(self.content)
-        self._set_collapsed(True)
+        self.set_collapsed(True)
+        self._update_move_buttons()
         self.characters_changed.connect(self._update_cast_buttons)
         self._refresh_casts()
         # Fetch voices on startup so they're cached for the Add dialog
@@ -402,9 +573,13 @@ class PanelWidget(QWidget):
         return button
 
     def _toggle(self) -> None:
-        self._set_collapsed(not self._collapsed)
+        self.set_collapsed(not self._collapsed)
 
-    def _set_collapsed(self, collapsed: bool) -> None:
+    def is_collapsed(self) -> bool:
+        return self._collapsed
+
+    def set_collapsed(self, collapsed: bool) -> None:
+        changed = collapsed != self._collapsed
         self._collapsed = collapsed
         self.content.setVisible(not collapsed)
         self.toggle_btn.setIcon(
@@ -414,9 +589,14 @@ class PanelWidget(QWidget):
                 else QStyle.StandardPixmap.SP_ArrowLeft
             )
         )
+        self.toggle_btn.setToolTip(
+            f"{'Show' if collapsed else 'Hide'} the characters panel (Alt+-)"
+        )
         self.setFixedWidth(
             self.COLLAPSED_WIDTH if collapsed else self.EXPANDED_WIDTH
         )
+        if changed:
+            self.collapsed_changed.emit(collapsed)
 
     # -- characters --------------------------------------------------------- #
     def characters(self) -> list[Character]:
@@ -443,10 +623,61 @@ class PanelWidget(QWidget):
                 item.setToolTip(character.tooltip())
                 self.table.setItem(row, column, item)
         self.table.resizeRowsToContents()
+        self._update_move_buttons()
+
+    # -- reordering --------------------------------------------------------- #
+    def _move_character(self, from_row: int, to_row: int) -> None:
+        """Move the character at from_row so it ends up at to_row."""
+        count = len(self._characters)
+        if not (0 <= from_row < count and 0 <= to_row < count):
+            return
+        if from_row != to_row:
+            self._characters.insert(to_row, self._characters.pop(from_row))
+            self._refresh_table()
+            self.characters_changed.emit()
+        self.table.selectRow(to_row)
+
+    def _move_selected(self, step: int) -> None:
+        row = self.table.currentRow()
+        if row >= 0:
+            self._move_character(row, row + step)
+
+    def _on_row_dropped(self, from_row: int, target_row: int) -> None:
+        # Above the target row, which shifts up once from_row is taken out.
+        self._move_character(
+            from_row, target_row - 1 if target_row > from_row else target_row
+        )
+
+    def _update_move_buttons(self) -> None:
+        row = self.table.currentRow()
+        selected = self.table.selectionModel().hasSelection() and row >= 0
+        self.up_btn.setEnabled(selected and row > 0)
+        self.down_btn.setEnabled(selected and row < len(self._characters) - 1)
+
+    def character_named(self, name: str) -> Character | None:
+        for character in self._characters:
+            if character.name == name:
+                return character
+        return None
 
     # -- casts -------------------------------------------------------------- #
+    def cast_name(self) -> str | None:
+        """The current cast's name, or None if it hasn't been saved yet."""
+        return self._cast_name
+
     def cast_modified(self) -> bool:
         return self._characters != self._saved_characters
+
+    def switch_cast(self, name: str) -> bool:
+        """Make the saved cast called name current, offering to save
+        changes first. False if the user cancelled or there is no such
+        cast."""
+        if name == self._cast_name:
+            return True
+        if not self.maybe_save_cast() or not self.load_cast(name):
+            self._refresh_casts()  # put the dropdown's selection back
+            return False
+        return True
 
     def load_cast(self, name: str) -> bool:
         """Show the saved cast called name. False if there is none."""
@@ -535,11 +766,8 @@ class PanelWidget(QWidget):
                 return name
 
     def _on_cast_activated(self, index: int) -> None:
-        name = self.cast_box.itemText(index)
-        if name == self._cast_name:
-            return
-        if not self.maybe_save_cast() or not self.load_cast(name):
-            self._refresh_casts()  # put the selection back
+        # On cancel switch_cast puts the dropdown back.
+        self.switch_cast(self.cast_box.itemText(index))
 
     def _on_new_cast(self) -> None:
         if not self.maybe_save_cast():

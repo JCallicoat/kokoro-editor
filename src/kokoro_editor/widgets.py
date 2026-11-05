@@ -2,8 +2,35 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QSlider, QStyle, QStyleOptionSlider
+from PySide6.QtCore import QMimeData, Qt, Signal
+from PySide6.QtWidgets import (
+    QPlainTextEdit,
+    QSlider,
+    QStyle,
+    QStyleOptionSlider,
+)
+
+from kokoro_editor.characters import CHARACTER_MIME_TYPE
+
+
+class EditorTextEdit(QPlainTextEdit):
+    """Plain text editor that accepts characters dragged from the panel,
+    reporting them with character_dropped(name) once the cursor sits at
+    the drop position."""
+
+    character_dropped = Signal(str)
+
+    def canInsertFromMimeData(self, source: QMimeData) -> bool:
+        return source.hasFormat(
+            CHARACTER_MIME_TYPE
+        ) or super().canInsertFromMimeData(source)
+
+    def insertFromMimeData(self, source: QMimeData) -> None:
+        if source.hasFormat(CHARACTER_MIME_TYPE):
+            name = bytes(source.data(CHARACTER_MIME_TYPE).data()).decode()
+            self.character_dropped.emit(name)
+        else:
+            super().insertFromMimeData(source)
 
 
 class SeekSlider(QSlider):

@@ -25,7 +25,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
-    QPlainTextEdit,
     QPushButton,
     QSizePolicy,
     QStyle,
@@ -41,7 +40,7 @@ from kokoro_editor.characters import (
     voice_tag,
     voice_tag_pattern,
 )
-from kokoro_editor.characters_panel import PanelWidget
+from kokoro_editor.characters_panel import CharacterPickerDialog, PanelWidget
 from kokoro_editor.render_dialog import RenderDialog
 from kokoro_editor.settings import (
     REQUEST_INACTIVITY_TIMEOUT_MS,
@@ -60,7 +59,7 @@ from kokoro_editor.settings import (
     speech_request,
 )
 from kokoro_editor.settings_dialog import SettingsDialog
-from kokoro_editor.widgets import SeekSlider
+from kokoro_editor.widgets import EditorTextEdit, SeekSlider
 
 APP_NAME = "Kokoro Editor"
 UNTITLED = "Untitled"
@@ -88,7 +87,7 @@ class MainWindow(QMainWindow):
         self._timer.timeout.connect(self._tick)
 
         # Widgets
-        self.text_edit = QPlainTextEdit()
+        self.text_edit = EditorTextEdit()
         self.text_edit.setPlaceholderText(
             "Type or open some text, then press Play to hear it."
         )
@@ -152,6 +151,7 @@ class MainWindow(QMainWindow):
             self.settings, self._nam, self._on_preview_active, self
         )
         self.panel.character_renamed.connect(self._rename_voice_tags)
+        self.text_edit.character_dropped.connect(self._insert_named_tag)
 
         top = QHBoxLayout()
         top.addWidget(self.text_edit, 1)
@@ -225,6 +225,39 @@ class MainWindow(QMainWindow):
         edit_menu.addActions([cut, copy, paste])
         edit_menu.addSeparator()
         edit_menu.addAction(select_all)
+        edit_menu.addSeparator()
+        # Alt+1…9 insert the cast's first characters. They're window actions
+        # so the keys are always taken, even past the last character (which
+        # would otherwise type the digit), and the menu, rebuilt as the
+        # characters change, only lists them.
+        for number in range(1, 10):
+            self.addAction(
+                self._action(
+                    "",
+                    lambda _=False, n=number: self._insert_tag_number(n),
+                    f"Alt+{number}",
+                )
+            )
+        self.insert_tag_menu = edit_menu.addMenu("Insert Character &Tag")
+        self._choose_character_action = self._action(
+            "&Choose Character…", self._choose_character, "Alt+0"
+        )
+        self.panel.characters_changed.connect(self._update_insert_tag_menu)
+        self._update_insert_tag_menu()
+
+        view_menu = bar.addMenu("&View")
+        self.panel_action = self._action(
+            "&Characters Panel",
+            lambda checked: self._show_panel(checked),
+            "Alt+-",
+        )
+        self.panel_action.setCheckable(True)
+        self.panel_action.setChecked(not self.panel.is_collapsed())
+        # Follows the panel's own toggle button too.
+        self.panel.collapsed_changed.connect(
+            lambda collapsed: self.panel_action.setChecked(not collapsed)
+        )
+        view_menu.addAction(self.panel_action)
 
         playback_menu = bar.addMenu("&Playback")
         self.play_action = self._action(
@@ -540,6 +573,59 @@ class MainWindow(QMainWindow):
         cursor.insertText(tag)
         self.text_edit.setTextCursor(cursor)
         self.text_edit.setFocus()
+
+    def _insert_named_tag(self, name: str) -> None:
+        character = self.panel.character_named(name)
+        if character is not None:
+            self.insert_voice_tag(character)
+
+    def _show_panel(self, show: bool) -> None:
+        """Expand the characters panel with its table focused for keyboard
+        use, or collapse it and go back to the editor."""
+        self.panel.set_collapsed(not show)
+        if show:
+            self.panel.table.setFocus()
+        else:
+            self.text_edit.setFocus()
+
+    def _insert_tag_number(self, number: int) -> None:
+        characters = self.panel.characters()
+        if number <= len(characters):
+            self.insert_voice_tag(characters[number - 1])
+        else:
+            self.status_label.setText(f"No character {number} in this cast.")
+
+    def _update_insert_tag_menu(self) -> None:
+        menu = self.insert_tag_menu
+        menu.clear()
+        for number, character in enumerate(self.panel.characters()[:9], 1):
+            # Escape & so Qt doesn't treat it as a mnemonic marker. The
+            # shortcut belongs to the window action and is only shown here.
+            name = character.name.replace("&", "&&")
+            action = menu.addAction(f"&{number}  {name}\tAlt+{number}")
+            action.triggered.connect(
+                lambda _=False, n=number: self._insert_tag_number(n)
+            )
+        if menu.isEmpty():
+            menu.addAction("No characters").setEnabled(False)
+        menu.addSeparator()
+        menu.addAction(self._choose_character_action)
+
+    def _choose_character(self) -> None:
+        dialog = CharacterPickerDialog(
+            self.panel.cast_name(), self.panel.characters(), self
+        )
+        accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        choice = dialog.choice()
+        dialog.deleteLater()
+        if not accepted or choice is None:
+            return
+        cast, name = choice
+        # Only the current cast's characters reach the server, so a pick
+        # from another cast switches to it.
+        if cast is not None and not self.panel.switch_cast(cast):
+            return
+        self._insert_named_tag(name)
 
     def _on_render_clicked(self) -> None:
         text = self._text_to_speak()
