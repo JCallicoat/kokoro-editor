@@ -254,7 +254,8 @@ def save_last_character(cast: str, character: str) -> None:
 
 def rename_cast(old: str, new: str) -> None:
     """Rename a saved cast in place, carrying over what's remembered about
-    it (the last cast, and its last picked character)."""
+    it (the last cast, its last picked character, and files saved with
+    it)."""
     casts = load_casts()
     save_casts({new if n == old else n: c for n, c in casts.items()})
     picks = load_last_characters()
@@ -263,6 +264,45 @@ def rename_cast(old: str, new: str) -> None:
         QSettings().setValue("last_characters", json.dumps(picks))
     if load_last_cast() == old:
         save_last_cast(new)
+    file_casts = load_file_casts()
+    _save_file_casts(
+        {path: new if c == old else c for path, c in file_casts.items()}
+    )
+
+
+# -- the cast each recent file was last saved with ---------------------- #
+def load_file_casts() -> dict[str, str]:
+    try:
+        data = json.loads(QSettings().value("file_casts", "{}", type=str))
+    except ValueError:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): str(v) for k, v in data.items()}
+
+
+def _save_file_casts(file_casts: dict[str, str]) -> None:
+    # Only recent files are remembered.
+    recent = set(load_recent_files())
+    kept = {p: c for p, c in file_casts.items() if p in recent}
+    QSettings().setValue("file_casts", json.dumps(kept))
+
+
+def file_cast(path: str) -> str | None:
+    """The cast path was last saved with, if it's a recent file."""
+    return load_file_casts().get(os.path.abspath(path))
+
+
+def save_file_cast(path: str, cast: str | None) -> None:
+    """Remember the cast path was saved with; None (a cast not saved
+    yet) forgets it."""
+    file_casts = load_file_casts()
+    path = os.path.abspath(path)
+    if cast:
+        file_casts[path] = cast
+    else:
+        file_casts.pop(path, None)
+    _save_file_casts(file_casts)
 
 
 def load_last_cast() -> str:

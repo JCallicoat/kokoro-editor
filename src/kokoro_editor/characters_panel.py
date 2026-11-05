@@ -445,6 +445,8 @@ class PanelWidget(QWidget):
     characters_changed = Signal()
     character_renamed = Signal(str, str)  # old name, new name
     collapsed_changed = Signal(bool)
+    # A voice list fetch finished, whether or not it got the list.
+    voices_fetched = Signal()
 
     def __init__(
         self,
@@ -687,6 +689,10 @@ class PanelWidget(QWidget):
         """The server's voices, or None if they haven't loaded."""
         return list(self._voices) or None
 
+    def voices_pending(self) -> bool:
+        """Whether the voice list is being fetched."""
+        return self._reply is not None
+
     def set_characters(self, characters: list[Character]) -> None:
         """Replace the current cast's characters, leaving it unsaved."""
         self._characters = list(characters)
@@ -866,14 +872,14 @@ class PanelWidget(QWidget):
         if reply is not self._reply:  # cancelled or superseded
             return
         self._reply = None
-        if reply.error() != QNetworkReply.NetworkError.NoError:
-            return
-        try:
-            self._voices = extract_voice_names(
-                json.loads(reply.readAll().data())
-            )
-        except (ValueError, TypeError, AttributeError):
-            pass
+        if reply.error() == QNetworkReply.NetworkError.NoError:
+            try:
+                self._voices = extract_voice_names(
+                    json.loads(reply.readAll().data())
+                )
+            except (ValueError, TypeError, AttributeError):
+                pass
+        self.voices_fetched.emit()
 
     def _on_cell_double_clicked(self, row: int, _column: int) -> None:
         self._edit_row(row)

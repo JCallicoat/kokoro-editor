@@ -11,7 +11,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PySide6.QtCore import QCoreApplication, QEvent, QSettings
-from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QInputDialog,
+    QMessageBox,
+)
 
 from kokoro_editor import characters_panel, settings_dialog
 from kokoro_editor.characters import Character
@@ -52,6 +57,17 @@ def isolated_settings(qapp):
         widget.hide()
         widget.deleteLater()
     _delete_pending()
+
+
+@pytest.fixture(autouse=True)
+def no_unscripted_dialogs(monkeypatch):
+    """Fail at once, instead of hanging, if a test opens a modal dialog it
+    hasn't scripted (tests script one by patching its class's exec)."""
+
+    def fail(dialog):
+        pytest.fail(f"Unscripted dialog opened: {dialog.windowTitle()!r}")
+
+    monkeypatch.setattr(QDialog, "exec", fail)
 
 
 @pytest.fixture(autouse=True)

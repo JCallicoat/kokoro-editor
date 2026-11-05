@@ -100,6 +100,9 @@ buttons to create a new (empty) cast, delete the current one, and save its
 changes. You're asked whether to save unsaved changes before switching casts,
 creating one, or quitting.
 
+Saving a file remembers the cast it was saved with (for your recent files).
+Opening it again while another cast is current offers to switch to that cast.
+
 #### Managing casts
 
 The **Casts** tab in Settings lists the saved casts. Changes there are saved
@@ -118,7 +121,7 @@ Cast files are JSON in the `{"voice_aliases": {...}}` format that
 Kokoro-FastAPI's web UI imports and exports, so casts can move between the
 two. (The web UI skips characters that don't have a voice yet.)
 
-### Checking voice tags
+### Checking tags
 
 Before Play or Render, the text is checked for voice tags the server would
 reject, which would fail the whole request: tags naming neither a character
@@ -128,16 +131,32 @@ in the current cast nor a valid voice mix. Tags with real voices, like
 If any are found, you can replace them: for each unknown name, pick a
 character (from any cast, importing it into the current cast if needed) and
 every tag with that name is replaced. Tags you don't replace are left in the
-document but removed from what's sent. **Edit → Validate Document Tags** runs
-the same check on the whole document without speaking.
+document but removed from what's sent.
 
-Characters that don't have a voice yet can't be spoken: if the text uses any,
-Play and Render stop and list them so you can choose their voices.
+Play and Render also stop if the text uses characters that don't have a voice
+yet, or if its pauses add up to more than the server allows in one request
+(300 seconds by default).
+
+**Edit → Validate Document Tags** checks the whole document, and runs by
+itself whenever a file is opened, once the server's voice list has loaded
+(staying quiet if all is well). Besides the
+checks above, it lists tags that would be read aloud or quietly changed, with
+a suggested fix where it's clear, and selects the first one:
+
+- misspelt pauses, rate changes and voice tags, like `[pause:1.5]` (for
+  `[pause:1.5s]`), `[pause: 2s]`, `[rate:fast]` or `[voice=bob]`;
+- pronunciations without the slashes, like `[Worcester](wʊstər)`;
+- pauses over 60 seconds, which the server shortens, and rates outside
+  0.25–4×, which it limits.
+
+Ordinary bracketed text like `[sic]` is left alone.
 
 ### Other inline tokens
 
 Every request is sent with `allow_voice_tags: true`, so voice tags and the
-server's other inline tokens work in the text, for example a pause:
+server's other inline tokens work in the text: pauses (`[pause:0.3s]`), rate
+changes (`[rate:1.2]`, until the next rate or voice tag) and pronunciations
+(`[Worcester](/wˈʊstər/)`):
 
 ```
 The narrator opens. [voice:af_bella] Did it land? [pause:0.3s] [voice:am_michael] It did.

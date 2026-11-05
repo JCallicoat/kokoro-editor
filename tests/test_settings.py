@@ -183,3 +183,22 @@ def test_rename_cast_carries_what_is_remembered(saga):
     assert load_casts()["Tale"] == saga
     assert load_last_cast() == "Tale"
     assert load_last_characters() == {"Tale": "bob"}
+
+
+def test_file_casts_follow_recent_files_and_renames(tmp_path, saga):
+    from kokoro_editor.settings import file_cast, save_file_cast
+
+    story = str(tmp_path / "story.txt")
+    save_file_cast(story, "Saga")
+    assert file_cast(story) is None  # only recent files are remembered
+    add_recent_file(story)
+    save_file_cast(story, "Saga")
+    assert file_cast(story) == "Saga"
+    rename_cast("Saga", "Tale")
+    assert file_cast(story) == "Tale"
+    save_file_cast(story, None)
+    assert file_cast(story) is None
+    save_file_cast(story, "Tale")
+    remove_recent_file(story)
+    save_file_cast(str(tmp_path / "other.txt"), "Tale")  # prunes the rest
+    assert file_cast(story) is None

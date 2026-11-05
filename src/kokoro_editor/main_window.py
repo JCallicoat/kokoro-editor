@@ -52,12 +52,14 @@ from kokoro_editor.settings import (
     AppSettings,
     add_recent_file,
     describe_http_error,
+    file_cast,
     fmt_time,
     load_casts,
     load_last_dir,
     load_recent_files,
     load_window_geometry,
     remove_recent_file,
+    save_file_cast,
     save_last_dir,
     save_recent_files,
     save_window_geometry,
@@ -65,11 +67,13 @@ from kokoro_editor.settings import (
     speech_request,
 )
 from kokoro_editor.settings_dialog import SettingsDialog
+from kokoro_editor.tags import pause_budget_error, tag_problems
 from kokoro_editor.widgets import EditorTextEdit, SeekSlider
 
 APP_NAME = "Kokoro Editor"
 UNTITLED = "Untitled"
 FILE_FILTER = "Text files (*.txt);;All files (*)"
+MAX_LISTED_PROBLEMS = 15
 
 
 class MainWindow(QMainWindow):
@@ -87,6 +91,8 @@ class MainWindow(QMainWindow):
         self._error_body = b""
         self._warning = ""
         self._resume_after_preview = False
+        # A file was opened while the voice list was still loading.
+        self._validation_waiting = False
 
         self._timer = QTimer(self)
         self._timer.setInterval(100)
@@ -157,6 +163,7 @@ class MainWindow(QMainWindow):
             self.settings, self._nam, self._on_preview_active, self
         )
         self.panel.character_renamed.connect(self._rename_voice_tags)
+        self.panel.voices_fetched.connect(self._on_voices_fetched)
         self.panel.set_tag_counter(
             lambda name: count_voice_tags(self.text_edit.toPlainText(), name)
         )
@@ -403,6 +410,40 @@ class MainWindow(QMainWindow):
         self._set_document(text, path)
         self._remember_file(path)
         self.status_label.setText(f"Opened {path}")
+        self._offer_file_cast(path)
+        self._validate_when_voices_known()
+
+    def _validate_when_voices_known(self) -> None:
+        """Validate the document quietly once the server's voice list is
+        in, so raw voice mixes are checked against it."""
+        if self.panel.voices_pending():
+            self._validation_waiting = True
+        else:
+            self._validate_tags(quiet=True)
+
+    def _on_voices_fetched(self) -> None:
+        if self._validation_waiting:
+            self._validation_waiting = False
+            self._validate_tags(quiet=True)
+
+    def _offer_file_cast(self, path: str) -> None:
+        """Offer to switch to the cast the file was last saved with, if
+        that's another saved cast."""
+        cast = file_cast(path)
+        current = self.panel.cast_name()
+        if not cast or cast == current or cast not in load_casts():
+            return
+        answer = QMessageBox.question(
+            self,
+            "Switch Cast",
+            f"{os.path.basename(path)} was last saved with the cast {cast}, "
+            f"but the current cast is {current or 'unsaved'}.\n\n"
+            f"Switch to {cast}?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self.panel.switch_cast(cast)
 
     def save(self) -> bool:
         if self._path is None:
@@ -433,6 +474,7 @@ class MainWindow(QMainWindow):
         self.text_edit.document().setModified(False)
         self._update_title()
         self._remember_file(self._path)
+        save_file_cast(self._path, self.panel.cast_name())
         self.status_label.setText(f"Saved {path}")
         return True
 
@@ -544,6 +586,10 @@ class MainWindow(QMainWindow):
         if not text:
             self.status_label.setText("Nothing to speak.")
             return None
+        budget = pause_budget_error(text)
+        if budget:
+            QMessageBox.warning(self, "Too many pauses", budget)
+            return None
         if not self._check_voiced(text):
             return None
         if not self.settings.voice_string:
@@ -570,22 +616,66 @@ class MainWindow(QMainWindow):
             text, self.panel.characters(), self.panel.voices()
         )
 
-    def _validate_tags(self) -> None:
-        """Edit > Validate Document Tags: the checks Play and Render make,
-        for the whole document."""
+    def _validate_tags(self, quiet: bool = False) -> None:
+        """Check every tag in the document: offer to replace unknown voice
+        tags, then list whatever else won't work as written, selecting the
+        first such tag. quiet (when a file is opened) says nothing if all
+        is well. Edit > Validate Document Tags."""
         unknown = self._unknown_tags(self.text_edit.toPlainText())
         if unknown and self._ask_replace_unknown(unknown, sending=False):
             self._replace_unknown_tags(unknown)
             unknown = self._unknown_tags(self.text_edit.toPlainText())
+        text = self.text_edit.toPlainText()
+        lines = []
         if unknown:
-            self.status_label.setText(
-                f"{len(unknown)} unknown voice tag name(s) left: "
-                + ", ".join(unknown)
+            lines.append(
+                "Unknown voice tags, left out of what's spoken: "
+                + ", ".join(voice_tag(name) for name in unknown)
             )
-        elif self._check_voiced(self.text_edit.toPlainText()):
-            QMessageBox.information(
-                self, "Validate Document Tags", "All voice tags are valid."
+        unvoiced = unvoiced_tag_names(text, self.panel.characters())
+        if unvoiced:
+            lines.append(
+                "Characters without a voice yet, which can't be spoken: "
+                + ", ".join(unvoiced)
             )
+        budget = pause_budget_error(text)
+        if budget:
+            lines.append(budget)
+        problems = tag_problems(text)
+        for problem in problems[:MAX_LISTED_PROBLEMS]:
+            line = text.count("\n", 0, problem.start) + 1
+            lines.append(f"Line {line}: {problem.message}")
+        if len(problems) > MAX_LISTED_PROBLEMS:
+            lines.append(
+                f"…and {len(problems) - MAX_LISTED_PROBLEMS} more like these."
+            )
+        if not lines:
+            if not quiet:
+                QMessageBox.information(
+                    self, "Validate Document Tags", "All tags are valid."
+                )
+            return
+        if problems:
+            self._select_text(text, problems[0].start, problems[0].end)
+        QMessageBox.warning(
+            self,
+            "Document Tags",
+            "Some tags won't work as written:\n\n"
+            + "\n\n".join(lines)
+            + ("\n\nThe first is selected." if problems else ""),
+        )
+
+    def _select_text(self, text: str, start: int, end: int) -> None:
+        """Select text[start:end] in the editor. Qt counts positions in
+        UTF-16 code units, which differ from Python's string indices."""
+
+        def position(index: int) -> int:
+            return len(text[:index].encode("utf-16-le")) // 2
+
+        cursor = self.text_edit.textCursor()
+        cursor.setPosition(position(start))
+        cursor.setPosition(position(end), QTextCursor.MoveMode.KeepAnchor)
+        self.text_edit.setTextCursor(cursor)
 
     def _ask_replace_unknown(self, names: list[str], sending: bool) -> bool:
         tags = "\n".join(voice_tag(name) for name in names)

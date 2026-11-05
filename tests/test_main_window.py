@@ -18,7 +18,7 @@ from kokoro_editor import characters_panel
 from kokoro_editor.casts_tab import ConflictDialog
 from kokoro_editor.characters import Character
 from kokoro_editor.characters_panel import CharacterPickerDialog
-from kokoro_editor.settings import save_cast
+from kokoro_editor.settings import delete_cast, file_cast, save_cast
 from kokoro_editor.settings_dialog import SettingsDialog
 
 Btn = QMessageBox.StandardButton
@@ -295,18 +295,102 @@ def test_characters_without_a_voice_stop_speaking(shown, boxes):
 
 def test_validate_document_tags(shown, boxes, monkeypatch):
     edit = shown.text_edit
-    edit.setPlainText(f"{NARRATOR} fine [voice:am_michael(3)+af_bella(1)]")
+    edit.setPlainText(
+        f"{NARRATOR} fine [voice:am_michael(3)+af_bella(1)] [pause:1s] "
+        "[rate:1.2] [Worcester](/wˈʊstər/) [sic]"
+    )
     shown._validate_tags()
-    assert boxes.last == "All voice tags are valid."
-    edit.setPlainText("[voice:ghost] [voice:imp]")
+    assert boxes.last == "All tags are valid."
+    shown._validate_tags(quiet=True)  # as when a file is opened
+    assert len(boxes.messages) == 1
+
+
+def test_validation_report(shown, boxes, monkeypatch):
+    edit = shown.text_edit
+    shown.panel.set_characters([*shown.panel.characters(), Character("mute")])
+    edit.setPlainText(
+        "[voice:ghost] [voice:imp] [voice:mute]\n😀 Wait [pause:1.5] here."
+        "\n[rate:9] [pause:90s]"
+    )
     boxes.answers = [Btn.Yes]
     picker_answers(monkeypatch, [("Saga", 0)], [None])
-    shown._validate_tags()
-    assert "left as they are" in boxes.texts_shown[-1]
-    assert edit.toPlainText() == f"{NARRATOR} [voice:imp]"
-    assert shown.status_label.text() == (
-        "1 unknown voice tag name(s) left: imp"
+    shown._validate_tags(quiet=True)
+    assert "left as they are" in boxes.texts_shown[0]
+    assert edit.toPlainText().startswith(f"{NARRATOR} [voice:imp]")
+    report = boxes.last
+    assert report.startswith("Some tags won't work as written:")
+    for part in (
+        "Unknown voice tags, left out of what's spoken: [voice:imp]",
+        "Characters without a voice yet, which can't be spoken: mute",
+        (
+            "Line 2: [pause:1.5] isn't a pause the server understands, so "
+            "it would be read aloud. Did you mean [pause:1.5s]?"
+        ),
+        "Line 3: [rate:9] is outside the rates",
+        "Line 3: [pause:90s] is longer than the server allows",
+    ):
+        assert part in report
+    assert report.endswith("The first is selected.")
+    # Selected despite the emoji before it, which Qt counts as two.
+    assert edit.textCursor().selectedText() == "[pause:1.5]"
+
+
+def test_too_many_pauses_stop_speaking(shown, boxes):
+    shown.text_edit.setPlainText("Wait. " + "[pause:60s] " * 6)
+    assert shown._prepare_speech() is None
+    assert boxes.messages[-1][1] == "Too many pauses"
+    assert "add up to 360 seconds" in boxes.last
+
+
+# -- the cast a file was saved with --------------------------------------- #
+@pytest.fixture
+def story(tmp_path):
+    path = tmp_path / "story.txt"
+    path.write_text("[voice:narrator] Once upon a time.")
+    return str(path)
+
+
+def test_saving_remembers_the_cast(shown, story):
+    shown.open_path(story)
+    shown.save()
+    assert file_cast(story) == "Saga"
+    shown.panel.set_characters([])  # still Saga, though unsaved
+    shown.panel._set_cast(None, [])
+    shown.save()
+    assert file_cast(story) is None
+
+
+def test_opening_offers_the_files_cast(shown, boxes, story, monkeypatch):
+    shown.open_path(story)
+    shown.save()
+    save_cast("Other", [Character("eve", "af_bella")])
+    shown.panel.load_cast("Other")
+    boxes.answers = [Btn.No, Btn.No]  # don't switch; don't replace tags
+    shown.open_path(story)
+    assert boxes.texts_shown[0] == (
+        "story.txt was last saved with the cast Saga, but the current cast "
+        "is Other.\n\nSwitch to Saga?"
     )
+    assert shown.panel.cast_name() == "Other"
+    # Declined: validation then finds the narrator unknown in this cast.
+    assert "[voice:narrator]" in boxes.texts_shown[1]
+    boxes.messages.clear()
+    boxes.answers = [Btn.Yes]
+    shown.open_path(story)
+    assert shown.panel.cast_name() == "Saga"
+    assert len(boxes.messages) == 1  # switched, and every tag is valid
+
+
+def test_no_offer_when_the_cast_is_gone_or_current(shown, boxes, story):
+    shown.open_path(story)
+    shown.save()
+    shown.open_path(story)  # already the current cast
+    assert boxes.messages == []
+    delete_cast("Saga")
+    shown.panel._set_cast(None, [])
+    boxes.answers = [Btn.No]  # declines replacing the unknown narrator tag
+    shown.open_path(story)
+    assert all("Switch to" not in text for text in boxes.texts_shown)
 
 
 # -- settings dialog ---------------------------------------------------- #
@@ -327,3 +411,38 @@ def test_settings_tabs_switch_with_alt_and_first_letter(window):
     assert tabs == ["&Casts", "&Kokoro", "&Editor"]
     assert dialog.isVisible()
     dialog.reject()
+
+
+def test_validation_waits_for_the_voice_list(shown, boxes, story):
+    from fakes import FakeReply
+
+    panel = shown.panel
+    panel._voices = []
+    panel._reply = loading = FakeReply()  # a fetch in progress
+    shown.text_edit.setPlainText("")
+    with open(story, "w") as f:
+        f.write("[voice:af_bella] Fine. [voice:nobody] Not a voice.")
+    shown.open_path(story)
+    assert boxes.messages == []  # not yet: nobody might be a voice
+    loading.data = b'{"voices": ["af_bella", "af_sky"]}'
+    boxes.answers = [Btn.No]
+    panel._on_voices(loading)
+    assert panel.voices() == ["af_bella", "af_sky"]
+    assert "[voice:nobody]" in boxes.texts_shown[0]
+
+
+def test_validation_still_runs_if_the_voice_list_fails(shown, boxes, story):
+    from fakes import FakeReply
+    from PySide6.QtNetwork import QNetworkReply
+
+    panel = shown.panel
+    panel._voices = []
+    panel._reply = loading = FakeReply()
+    with open(story, "w") as f:
+        f.write("[voice:nobody] Can't tell. [pause:1] Misspelt.")
+    shown.open_path(story)
+    loading.network_error = QNetworkReply.NetworkError.ConnectionRefusedError
+    panel._on_voices(loading)
+    # Without the list only a mix's form is checked, so nobody passes.
+    assert len(boxes.messages) == 1
+    assert "[pause:1] isn't a pause" in boxes.last
