@@ -151,6 +151,8 @@ Opening it again while another cast is current offers to switch to that cast.
 The **Casts** tab in Settings lists the saved casts. Changes there are saved
 straight away.
 
+- **Add** adds an empty cast and lets you type its name.
+- **Remove…** deletes the selected cast, after asking.
 - **Rename** (or double-click, or F2) renames a cast in place.
 - **Import…** adds the characters in a cast file to the selected cast.
 - **Export…** saves the selected cast as a cast file.

@@ -1,5 +1,5 @@
-"""Casts tab of the Settings dialog: rename saved casts, import and export
-them as cast files, and copy characters between them.
+"""Casts tab of the Settings dialog: add, remove and rename saved casts,
+import and export them as cast files, and copy characters between them.
 
 Everything here is saved straight away rather than when Settings is
 accepted, like the panel's own cast buttons.
@@ -42,6 +42,7 @@ from kokoro_editor.characters import (
 )
 from kokoro_editor.characters_panel import PanelWidget
 from kokoro_editor.settings import (
+    delete_cast,
     load_casts,
     load_last_dir,
     rename_cast,
@@ -314,9 +315,17 @@ class CastsTab(QWidget):
         self.cast_list.itemChanged.connect(self._on_item_changed)
         self.cast_list.currentItemChanged.connect(self._update_buttons)
 
+        self.add_btn = QPushButton("Add")
+        self.add_btn.setToolTip("Add an empty cast and name it")
+        self.add_btn.clicked.connect(self._add)
+        self.remove_btn = QPushButton("Remove…")
+        self.remove_btn.setToolTip("Delete the selected cast")
+        self.remove_btn.clicked.connect(self._remove)
         self.rename_btn = QPushButton("Rename")
         self.rename_btn.clicked.connect(self._rename)
         rename_row = QHBoxLayout()
+        rename_row.addWidget(self.add_btn)
+        rename_row.addWidget(self.remove_btn)
         rename_row.addWidget(self.rename_btn)
         rename_row.addStretch(1)
 
@@ -373,11 +382,41 @@ class CastsTab(QWidget):
 
     def _update_buttons(self) -> None:
         selected = self._selected() is not None
+        self.remove_btn.setEnabled(selected)
         self.rename_btn.setEnabled(selected)
         self.export_btn.setEnabled(selected)
         self.insert_btn.setEnabled(self.cast_list.count() >= 2)
 
-    # -- rename ------------------------------------------------------------- #
+    # -- add, remove, rename ------------------------------------------------ #
+    def _add(self) -> None:
+        """Save an empty cast with a free placeholder name, then start
+        renaming it."""
+        name = _free_cast_name("New cast", list(load_casts()))
+        save_cast(name, [])
+        self._panel.casts_changed(name)
+        self._refresh(name)
+        self._rename()
+
+    def _remove(self) -> None:
+        name = self._selected()
+        if name is None:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Delete Cast",
+            f"Delete the cast {name} and its characters?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        row = self.cast_list.currentRow()
+        delete_cast(name)
+        self._panel.cast_deleted(name)
+        self._refresh(None)
+        # Select the next cast along, so several can be removed in turn.
+        self.cast_list.setCurrentRow(min(row, self.cast_list.count() - 1))
+
     def _rename(self) -> None:
         item = self.cast_list.currentItem()
         if item is not None:

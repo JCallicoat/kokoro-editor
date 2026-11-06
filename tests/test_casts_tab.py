@@ -118,6 +118,50 @@ def test_rename_refuses_a_taken_name(tab, boxes):
     assert "Saga" in load_casts()
 
 
+def test_add_names_a_new_empty_cast(tab, panel):
+    tab.add_btn.click()
+    editor = QApplication.focusWidget()  # renaming it straight away
+    assert editor.text() == "New cast"
+    editor.selectAll()
+    QTest.keyClicks(editor, "Fresh")
+    QTest.keyClick(editor, Qt.Key.Key_Return)
+    QTest.qWait(20)
+    assert load_casts()["Fresh"] == []
+    assert "New cast" not in load_casts()
+    assert panel.cast_name() == "Saga"  # still the current cast
+    assert "Fresh" in [
+        panel.cast_box.itemText(i) for i in range(panel.cast_box.count())
+    ]
+    tab.add_btn.click()  # left unnamed, then another
+    QTest.keyClick(QApplication.focusWidget(), Qt.Key.Key_Escape)
+    tab.add_btn.click()
+    QTest.keyClick(QApplication.focusWidget(), Qt.Key.Key_Escape)
+    assert {"New cast", "New cast (2)"} <= set(load_casts())
+
+
+def test_remove_asks_then_deletes(tab, panel, boxes):
+    tab.cast_list.setCurrentRow(0)  # Alpha
+    boxes.answers = [Btn.No]
+    tab.remove_btn.click()
+    assert "Alpha" in load_casts()
+    boxes.answers = [Btn.Yes]
+    tab.remove_btn.click()
+    assert boxes.last == "Delete the cast Alpha and its characters?"
+    assert listed(tab) == ["Saga", "Zed"]
+    assert tab.cast_list.currentItem().text() == "Saga"  # the next one
+    assert panel.cast_name() == "Saga"
+    assert panel.cast_box.count() == 2
+    boxes.answers = [Btn.Yes]  # the panel's current cast
+    tab.remove_btn.click()
+    assert list(load_casts()) == ["Zed"]
+    assert panel.cast_name() is None and panel.characters() == []
+    boxes.answers = [Btn.Yes]
+    tab.remove_btn.click()
+    assert listed(tab) == []
+    assert not tab.remove_btn.isEnabled()
+    assert not tab.rename_btn.isEnabled()
+
+
 def test_export(tab, panel, boxes, saga, tmp_path, monkeypatch):
     path = tmp_path / "saga.json"
     choose_files(monkeypatch, str(path))

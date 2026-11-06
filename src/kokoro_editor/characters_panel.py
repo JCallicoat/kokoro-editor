@@ -893,6 +893,14 @@ class PanelWidget(QWidget):
             save_last_cast(new)
         self._refresh_casts()
 
+    def cast_deleted(self, name: str) -> None:
+        """The saved cast called name was deleted; if it was current, as
+        when deleted here, no cast is."""
+        if name == self._cast_name:
+            self._set_cast(None, [])
+        else:
+            self._refresh_casts()
+
     def casts_changed(self, name: str) -> None:
         """The saved cast called name changed; show it if it's current."""
         if name == self._cast_name:
