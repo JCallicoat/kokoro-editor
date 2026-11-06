@@ -187,6 +187,10 @@ class MainWindow(QMainWindow):
             lambda name: count_voice_tags(self.text_edit.toPlainText(), name)
         )
         self.text_edit.character_dropped.connect(self._insert_named_tag)
+        # Queued, so the dialog asking for the tag waits for the drop to end.
+        self.text_edit.new_tag_dropped.connect(
+            self._insert_new_tag, Qt.ConnectionType.QueuedConnection
+        )
         self.text_edit.tag_double_clicked.connect(self._edit_tag)
         self.text_edit.tag_tooltip = self._tag_tooltip
 
@@ -547,6 +551,7 @@ class MainWindow(QMainWindow):
         """Push the current settings into the UI (at startup and after Settings)."""
         self.text_edit.setFont(self.settings.editor_font())
         self.panel.set_settings(self.settings)
+        self.tag_toolbar.set_tag_colors(self.settings)
         self._refresh_highlighter()
         self._update_summary()
 
@@ -1079,6 +1084,17 @@ class MainWindow(QMainWindow):
         character = self.panel.character_named(name)
         if character is not None:
             self.insert_voice_tag(character)
+
+    def _insert_new_tag(self, kind: str) -> None:
+        """A pause, rate or pronunciation button dropped on the editor: ask
+        for the tag as clicking it does, to go in where it was dropped."""
+        insert = {
+            "pause": self._insert_pause,
+            "rate": self._insert_rate,
+            "pronunciation": self._insert_pronunciation,
+        }.get(kind)
+        if insert is not None:
+            insert()
 
     def _show_panel(self, show: bool) -> None:
         """Expand the characters panel with its table focused for keyboard

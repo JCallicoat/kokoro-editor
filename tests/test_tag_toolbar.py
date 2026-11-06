@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import pytest
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPoint, QPointF, Qt
+from PySide6.QtGui import QDrag, QDragEnterEvent, QDragMoveEvent, QDropEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
@@ -12,7 +13,8 @@ from PySide6.QtWidgets import (
     QMessageBox,
 )
 
-from kokoro_editor.characters import Character
+from kokoro_editor.characters import CHARACTER_MIME_TYPE, Character
+from kokoro_editor.colors import text_color
 from kokoro_editor.settings import (
     load_casts,
     load_tag_toolbar_visible,
@@ -23,6 +25,7 @@ from kokoro_editor.tag_toolbar import (
     SCROLL_STEP,
     PronunciationDialog,
     button_label,
+    new_tag_mime_data,
 )
 from kokoro_editor.tags import (
     pause_tag,
@@ -31,6 +34,7 @@ from kokoro_editor.tags import (
     rate_tag,
     tag_problems,
 )
+from kokoro_editor.widgets import NEW_TAG_MIME_TYPE
 
 
 def names(window) -> list[str]:
@@ -325,3 +329,88 @@ def test_alt_s_saves_the_cast(window, boxes, saga):
     QTest.keyClick(*alt_s)
     assert load_casts()["Fresh"] == [Character("new")]
     assert panel.cast_name() == "Fresh"
+
+
+def test_tag_buttons_are_in_their_tag_colours(window):
+    buttons = window.tag_toolbar.tag_buttons
+    for kind in ("pause", "rate", "pronunciation"):
+        color = getattr(window.settings, f"{kind}_color")
+        assert f"background-color: {color};" in buttons[kind].styleSheet()
+        assert f"color: {text_color(color)};" in buttons[kind].styleSheet()
+    window.settings.pause_color = "#123456"  # as Settings would
+    window._apply_settings()
+    assert "#123456" in buttons["pause"].styleSheet()
+
+
+def drag_button(button, monkeypatch):
+    """Press button and move far enough to drag it: what it would drag,
+    and whether it was clicked."""
+    dragged, clicked = [], []
+
+    def fake_exec(drag, *args):
+        dragged.append(drag.mimeData())
+        return Qt.DropAction.IgnoreAction
+
+    monkeypatch.setattr(QDrag, "exec", fake_exec)
+    button.clicked.connect(lambda: clicked.append(True))
+    start = QPoint(5, 5)
+    far = start + QPoint(QApplication.startDragDistance() + 5, 0)
+    QTest.mousePress(button, Qt.MouseButton.LeftButton, pos=start)
+    QTest.mouseMove(button, far)
+    QTest.mouseRelease(button, Qt.MouseButton.LeftButton, pos=far)
+    return dragged, clicked
+
+
+def test_character_buttons_can_be_dragged(window, saga, monkeypatch):
+    window.show()
+    window.panel.load_cast("Saga")
+    dragged, clicked = drag_button(
+        character_button(window, "bob"), monkeypatch
+    )
+    (data,) = dragged
+    assert bytes(data.data(CHARACTER_MIME_TYPE).data()) == b"bob"
+    assert data.text() == "[voice:bob]"
+    assert not clicked
+
+
+def test_tag_buttons_can_be_dragged(window, monkeypatch):
+    window.show()
+    button = window.tag_toolbar.tag_buttons["rate"]
+    dragged, clicked = drag_button(button, monkeypatch)
+    (data,) = dragged
+    assert bytes(data.data(NEW_TAG_MIME_TYPE).data()) == b"rate"
+    assert not clicked
+
+
+def drop_on_editor(window, data, position):
+    edit = window.text_edit
+    cursor = edit.textCursor()
+    cursor.setPosition(position)
+    pos = QPointF(edit.cursorRect(cursor).center())
+    viewport = edit.viewport()
+    args = (data, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+    for event_type in (QDragEnterEvent, QDragMoveEvent):
+        QApplication.sendEvent(
+            viewport,
+            event_type(pos.toPoint(), Qt.DropAction.CopyAction, *args),
+        )
+    QApplication.sendEvent(
+        viewport, QDropEvent(pos, Qt.DropAction.CopyAction, *args)
+    )
+    QApplication.instance().processEvents()  # the queued question
+
+
+def test_dropped_tag_buttons_ask_then_insert_there(window, monkeypatch):
+    window.show()
+    edit = window.text_edit
+    edit.setPlainText("Hello world")
+    asked = answer_number(monkeypatch, 2.0)
+    drop_on_editor(window, new_tag_mime_data("pause"), 6)
+    assert asked[0][0] == "Insert Pause"
+    assert edit.toPlainText() == "Hello [pause:2s] world"
+    answer_pronunciation(monkeypatch, "tomˈɑːto", word="tomato")
+    drop_on_editor(window, new_tag_mime_data("pronunciation"), 0)
+    assert edit.toPlainText() == "[tomato](/tomˈɑːto/) Hello [pause:2s] world"
+    answer_number(monkeypatch, 1.0, ok=False)  # cancelled: nothing
+    drop_on_editor(window, new_tag_mime_data("rate"), 0)
+    assert edit.toPlainText() == "[tomato](/tomˈɑːto/) Hello [pause:2s] world"

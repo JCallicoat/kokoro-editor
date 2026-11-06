@@ -32,6 +32,9 @@ from kokoro_editor.tags import string_index, tag_at, utf16_index
 
 # Drag and drop format for a tag moved within (or copied from) the editor.
 TAG_MIME_TYPE = "application/x-kokoro-editor-tag"
+# Drag and drop format for a kind of tag to ask for, such as "pause",
+# dragged from the tag toolbar.
+NEW_TAG_MIME_TYPE = "application/x-kokoro-editor-new-tag"
 
 
 class ColorButton(QPushButton):
@@ -70,6 +73,8 @@ class EditorTextEdit(QPlainTextEdit):
 
     - characters dragged from the panel are reported with
       character_dropped(name) once the cursor sits at the drop position;
+    - so are kinds of tag dragged from the tag toolbar, with
+      new_tag_dropped(kind);
     - a tag can be dragged to move it (Ctrl copies), or to other apps;
     - double-clicking a tag reports it with tag_double_clicked(start, end)
       in document positions;
@@ -79,6 +84,7 @@ class EditorTextEdit(QPlainTextEdit):
     """
 
     character_dropped = Signal(str)
+    new_tag_dropped = Signal(str)  # "pause", "rate" or "pronunciation"
     tag_double_clicked = Signal(int, int)  # document positions
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -219,6 +225,7 @@ class EditorTextEdit(QPlainTextEdit):
     def canInsertFromMimeData(self, source: QMimeData) -> bool:
         return (
             source.hasFormat(CHARACTER_MIME_TYPE)
+            or source.hasFormat(NEW_TAG_MIME_TYPE)
             or source.hasFormat(TAG_MIME_TYPE)
             or super().canInsertFromMimeData(source)
         )
@@ -227,6 +234,9 @@ class EditorTextEdit(QPlainTextEdit):
         if source.hasFormat(CHARACTER_MIME_TYPE):
             name = bytes(source.data(CHARACTER_MIME_TYPE).data()).decode()
             self.character_dropped.emit(name)
+        elif source.hasFormat(NEW_TAG_MIME_TYPE):
+            kind = bytes(source.data(NEW_TAG_MIME_TYPE).data()).decode()
+            self.new_tag_dropped.emit(kind)
         else:
             super().insertFromMimeData(source)
 

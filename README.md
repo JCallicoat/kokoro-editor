@@ -90,7 +90,7 @@ character is just a voice tag with its name:
 To insert a character's tag at the cursor:
 
 - click the character's button on the tag toolbar under the editor;
-- drag the character's row onto the editor;
+- drag the character's row, or its toolbar button, onto the editor;
 - press **Alt+1** to **Alt+9** for the first nine characters (also listed
   under **Edit → Insert Character Tag**);
 - press **Alt+0** to pick a character from any cast (picking one from
@@ -126,6 +126,10 @@ or the mouse wheel scroll them), then buttons for the server's other tags:
   inserts `[rate:1.2]`;
 - **Pronunciation** asks for a word and its IPA and inserts
   `[Worcester](/wˈʊstər/)`, replacing the word if it's selected.
+
+Each button is in its tag's colour. Drag a button onto the editor to put
+its tag where you drop it instead of at the cursor (Pause, Rate and
+Pronunciation still ask for their values first).
 
 Hide or show it with **View → Tag Toolbar** (Alt+=); the choice is
 remembered.

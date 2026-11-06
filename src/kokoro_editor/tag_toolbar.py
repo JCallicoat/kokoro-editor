@@ -1,11 +1,27 @@
 """Toolbar under the editor for inserting tags: one button per character
-in the current cast, then pause, rate and pronunciation buttons."""
+in the current cast, then pause, rate and pronunciation buttons. Each is
+in its tag's colour and can be clicked, or dragged to where the tag
+should go."""
 
 from __future__ import annotations
 
-from PySide6.QtCore import QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QWheelEvent
+from collections.abc import Callable
+
+from PySide6.QtCore import (
+    QByteArray,
+    QEvent,
+    QMimeData,
+    QObject,
+    QPoint,
+    QSize,
+    Qt,
+    QTimer,
+    Signal,
+)
+from PySide6.QtGui import QAction, QDrag, QWheelEvent
 from PySide6.QtWidgets import (
+    QAbstractButton,
+    QApplication,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -23,9 +39,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from kokoro_editor.characters import Character, character_colors
+from kokoro_editor.characters import (
+    CHARACTER_MIME_TYPE,
+    Character,
+    character_colors,
+    voice_tag,
+)
 from kokoro_editor.colors import text_color
+from kokoro_editor.settings import AppSettings
 from kokoro_editor.tags import pronunciation_error
+from kokoro_editor.widgets import NEW_TAG_MIME_TYPE
 
 # Longest character name shown on a button; longer ones are shortened.
 MAX_LABEL_LENGTH = 20
@@ -41,6 +64,74 @@ def button_label(name: str) -> str:
     if len(name) > MAX_LABEL_LENGTH:
         name = name[: MAX_LABEL_LENGTH - 1] + "…"
     return name.replace("&", "&&")
+
+
+def button_style(color: str) -> str:
+    """A tag button's style sheet: in its tag colour, as in the text."""
+    return (
+        f"QToolButton {{ background-color: {color};"
+        f" color: {text_color(color)}; border-radius: 3px;"
+        " padding: 2px 6px; }"
+        " QToolButton:hover { border: 1px solid palette(highlight); }"
+    )
+
+
+class DragStarter(QObject):
+    """Lets a button be dragged as well as clicked: pressing it and moving
+    far enough drags mime_data() instead of clicking it."""
+
+    def __init__(
+        self, button: QAbstractButton, mime_data: Callable[[], QMimeData]
+    ) -> None:
+        super().__init__(button)
+        self._mime_data = mime_data
+        self._pressed: QPoint | None = None
+        button.installEventFilter(self)
+
+    def eventFilter(self, button: QObject, event: QEvent) -> bool:
+        kind = event.type()
+        if kind == QEvent.Type.MouseButtonPress:
+            left = event.button() == Qt.MouseButton.LeftButton
+            self._pressed = event.position().toPoint() if left else None
+        elif kind == QEvent.Type.MouseButtonRelease:
+            self._pressed = None
+        elif (
+            kind == QEvent.Type.MouseMove
+            and self._pressed is not None
+            and event.buttons() & Qt.MouseButton.LeftButton
+        ):
+            moved = event.position().toPoint() - self._pressed
+            if moved.manhattanLength() >= QApplication.startDragDistance():
+                self._drag(button)
+                return True
+        return False
+
+    def _drag(self, button: QAbstractButton) -> None:
+        pressed, self._pressed = self._pressed, None
+        # Not down, so letting go over the button doesn't click it too.
+        button.setDown(False)
+        drag = QDrag(button)
+        drag.setMimeData(self._mime_data())
+        drag.setPixmap(button.grab())
+        drag.setHotSpot(pressed)
+        drag.exec(Qt.DropAction.CopyAction)
+
+
+def character_mime_data(name: str) -> QMimeData:
+    """What dragging a character's button carries: its name for the
+    editor, as the panel's rows do, and its tag for other apps."""
+    data = QMimeData()
+    data.setData(CHARACTER_MIME_TYPE, QByteArray(name.encode()))
+    data.setText(voice_tag(name))
+    return data
+
+
+def new_tag_mime_data(kind: str) -> QMimeData:
+    """What dragging a pause, rate or pronunciation button carries: the
+    kind of tag, which the editor asks for once it's dropped."""
+    data = QMimeData()
+    data.setData(NEW_TAG_MIME_TYPE, QByteArray(kind.encode()))
+    return data
 
 
 class CharacterStrip(QWidget):
@@ -127,13 +218,12 @@ class CharacterStrip(QWidget):
             button.setText(button_label(character.name))
             button.setToolTip(character.tooltip())
             button.setAutoRaise(True)
-            # In its tag colour, as in the text.
-            color = colors[character.name.casefold()]
             button.setStyleSheet(
-                f"QToolButton {{ background-color: {color};"
-                f" color: {text_color(color)}; border-radius: 3px;"
-                " padding: 2px 6px; }"
-                " QToolButton:hover { border: 1px solid palette(highlight); }"
+                button_style(colors[character.name.casefold()])
+            )
+            DragStarter(
+                button,
+                lambda name=character.name: character_mime_data(name),
             )
             # Leave focus in the editor.
             button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -224,7 +314,8 @@ class CharacterStrip(QWidget):
 
 class TagToolbar(QToolBar):
     """Asks for tags rather than inserting them, so the window can insert
-    them the same way as its other insertion methods."""
+    them the same way as its other insertion methods. Dragged, the buttons
+    leave the editor to ask (see DragStarter)."""
 
     character_clicked = Signal(str)  # character name
     pause_clicked = Signal()
@@ -238,32 +329,48 @@ class TagToolbar(QToolBar):
         self.strip.character_clicked.connect(self.character_clicked)
         self.addWidget(self.strip)
         self.addSeparator()
+        # Tag kind -> its button, to colour.
+        self.tag_buttons: dict[str, QAbstractButton] = {}
         self._tag_action(
+            "pause",
             "Pause…",
             "Insert a pause of a chosen length: [pause:1.5s]",
             self.pause_clicked,
         )
         self._tag_action(
+            "rate",
             "Rate…",
             "Change the speaking rate until the next rate or voice tag: "
             "[rate:1.2]",
             self.rate_clicked,
         )
         self._tag_action(
+            "pronunciation",
             "Pronunciation…",
             "Say a word (the selected one, if any) as written in IPA: "
             "[word](/ipa/)",
             self.pronunciation_clicked,
         )
 
-    def _tag_action(self, text: str, tooltip: str, signal) -> None:
+    def _tag_action(self, kind: str, text: str, tooltip: str, signal) -> None:
         action = QAction(text, self)
         action.setToolTip(tooltip)
         action.triggered.connect(lambda _=False: signal.emit())
         self.addAction(action)
+        button = self.widgetForAction(action)
+        button.setAutoRaise(True)
+        DragStarter(button, lambda: new_tag_mime_data(kind))
+        self.tag_buttons[kind] = button
 
     def set_characters(self, characters: list[Character]) -> None:
         self.strip.set_characters(characters)
+
+    def set_tag_colors(self, settings: AppSettings) -> None:
+        """Colour the pause, rate and pronunciation buttons as settings
+        colours their tags."""
+        for kind, button in self.tag_buttons.items():
+            color = getattr(settings, f"{kind}_color")
+            button.setStyleSheet(button_style(color))
 
 
 class PronunciationDialog(QDialog):
