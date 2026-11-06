@@ -127,7 +127,8 @@ or the mouse wheel scroll them), then buttons for the server's other tags:
 - **Pronunciation** asks for a word and its IPA and inserts
   `[Worcester](/wˈʊstər/)`, replacing the word if it's selected.
 
-Each button is in its tag's colour. Drag a button onto the editor to put
+Each button is in its tag's colour, or plain while **View → Highlight
+Tags** is off. Drag a button onto the editor to put
 its tag where you drop it instead of at the cursor (Pause, Rate and
 Pronunciation still ask for their values first).
 

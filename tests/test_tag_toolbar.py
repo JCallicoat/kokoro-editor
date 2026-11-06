@@ -21,6 +21,7 @@ from kokoro_editor.settings import (
     save_cast,
 )
 from kokoro_editor.tag_toolbar import (
+    BUTTON_SPACING,
     CHARACTER_STRIP_MIN_WIDTH,
     SCROLL_STEP,
     PronunciationDialog,
@@ -342,6 +343,45 @@ def test_tag_buttons_are_in_their_tag_colours(window):
     assert "#123456" in buttons["pause"].styleSheet()
 
 
+def test_buttons_are_plain_without_highlighting(window, saga):
+    from kokoro_editor.main_window import MainWindow
+
+    window.panel.load_cast("Saga")
+    toolbar = window.tag_toolbar
+    buttons = [*toolbar.strip.buttons, *toolbar.tag_buttons.values()]
+    assert all(b.styleSheet() for b in buttons)
+    window.highlight_action.trigger()  # off
+    assert not any(b.styleSheet() for b in buttons)
+    window.panel.set_characters([Character("eve")])  # still plain
+    assert not character_button(window, "eve").styleSheet()
+    window.settings.pause_color = "#123456"
+    window._apply_settings()
+    assert not toolbar.tag_buttons["pause"].styleSheet()
+    again = MainWindow()  # remembered
+    assert not again.tag_toolbar.tag_buttons["pause"].styleSheet()
+    window.highlight_action.trigger()  # on again
+    assert "#123456" in toolbar.tag_buttons["pause"].styleSheet()
+    assert character_button(window, "eve").styleSheet()
+
+
+def test_all_buttons_are_spaced_alike(window):
+    window.show()
+    window.panel.set_characters([Character("al"), Character("bo")])
+    QApplication.instance().processEvents()
+    toolbar = window.tag_toolbar
+
+    def gap(left, right):
+        start = right.mapTo(toolbar, QPoint(0, 0)).x()
+        return start - left.mapTo(toolbar, QPoint(left.width(), 0)).x()
+
+    al, bo = toolbar.strip.buttons
+    pause, rate, pronunciation = toolbar.tag_buttons.values()
+    assert gap(al, bo) == BUTTON_SPACING
+    assert gap(pause, rate) == gap(rate, pronunciation) == BUTTON_SPACING
+    window.tag_toolbar.setStyle(window.tag_toolbar.style())  # a new style
+    assert toolbar.layout().spacing() == BUTTON_SPACING
+
+
 def drag_button(button, monkeypatch):
     """Press button and move far enough to drag it: what it would drag,
     and whether it was clicked."""
@@ -414,3 +454,30 @@ def test_dropped_tag_buttons_ask_then_insert_there(window, monkeypatch):
     answer_number(monkeypatch, 1.0, ok=False)  # cancelled: nothing
     drop_on_editor(window, new_tag_mime_data("rate"), 0)
     assert edit.toPlainText() == "[tomato](/tomˈɑːto/) Hello [pause:2s] world"
+
+
+def test_strip_fits_after_toggling_colours(window):
+    window.resize(1300, 400)
+    window.show()
+    strip = window.tag_toolbar.strip
+    window.panel.set_characters(
+        [Character("al"), Character("bo"), Character("charlie")]
+    )
+
+    def settle():
+        QApplication.instance().processEvents()
+        assert strip.width() == strip.sizeHint().width()
+        assert not strip.left_btn.isVisibleTo(strip)
+        assert not strip.right_btn.isVisibleTo(strip)
+        assert strip.scroll_area.horizontalScrollBar().maximum() == 0
+        heights = [b.sizeHint().height() for b in strip.buttons]
+        assert strip.scroll_area.height() >= max(heights)
+        return strip.width()
+
+    colored = settle()
+    for _ in range(2):
+        window.highlight_action.trigger()  # off
+        plain = settle()
+        window.highlight_action.trigger()  # on
+        assert settle() == colored
+    assert plain != colored

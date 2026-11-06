@@ -209,6 +209,7 @@ class MainWindow(QMainWindow):
             lambda: self.tag_toolbar.set_characters(self.panel.characters())
         )
         self.tag_toolbar.setVisible(load_tag_toolbar_visible())
+        self.tag_toolbar.set_colored(self._highlighting)
         self._last_pause_s = 1.0
         self._last_rate = 1.0
         self._last_ipa = ""
@@ -1060,9 +1061,10 @@ class MainWindow(QMainWindow):
 
     def _set_highlighting(self, highlight: bool) -> None:
         """View > Highlight Tags. Off, the highlighter is detached so the
-        text goes back to plain."""
+        text goes back to plain, and so do the tag toolbar's buttons."""
         self._highlighting = highlight
         save_highlight_tags(highlight)
+        self.tag_toolbar.set_colored(highlight)
         if highlight:
             self._refresh_highlighter()
         else:

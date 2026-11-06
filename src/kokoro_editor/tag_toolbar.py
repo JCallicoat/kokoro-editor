@@ -1,7 +1,7 @@
 """Toolbar under the editor for inserting tags: one button per character
 in the current cast, then pause, rate and pronunciation buttons. Each is
-in its tag's colour and can be clicked, or dragged to where the tag
-should go."""
+in its tag's colour (unless tags aren't highlighted in the text) and can
+be clicked, or dragged to where the tag should go."""
 
 from __future__ import annotations
 
@@ -55,6 +55,10 @@ MAX_LABEL_LENGTH = 20
 # Narrowest the character strip gets, leaving room for its arrows.
 CHARACTER_STRIP_MIN_WIDTH = 120
 SCROLL_STEP = 60  # pixels per arrow click or wheel step
+# Between every pair of buttons, in the strip and on the toolbar. Not 2:
+# at fractional display scales, gaps round a pixel either way, which shows
+# less on a wider gap.
+BUTTON_SPACING = 3
 
 
 def button_label(name: str) -> str:
@@ -66,8 +70,11 @@ def button_label(name: str) -> str:
     return name.replace("&", "&&")
 
 
-def button_style(color: str) -> str:
-    """A tag button's style sheet: in its tag colour, as in the text."""
+def button_style(color: str | None) -> str:
+    """A tag button's style sheet: in its tag colour, as in the text, or
+    plain for None."""
+    if color is None:
+        return ""
     return (
         f"QToolButton {{ background-color: {color};"
         f" color: {text_color(color)}; border-radius: 3px;"
@@ -154,7 +161,7 @@ class CharacterStrip(QWidget):
         self._buttons_widget = QWidget()
         self._buttons_layout = QHBoxLayout(self._buttons_widget)
         self._buttons_layout.setContentsMargins(0, 0, 0, 0)
-        self._buttons_layout.setSpacing(2)
+        self._buttons_layout.setSpacing(BUTTON_SPACING)
         # The row is at least as wide as its buttons, so when they don't fit
         # the scroll range follows them as they're added or shown.
         self._buttons_layout.setSizeConstraint(
@@ -188,6 +195,8 @@ class CharacterStrip(QWidget):
         layout.addWidget(self.scroll_area, 1)
         layout.addWidget(self.right_btn)
         self.buttons: list[QToolButton] = []
+        self._colors: list[str] = []  # each character button's colour
+        self._colored = True
         self._fitting = False
         self.set_characters([])
 
@@ -213,14 +222,12 @@ class CharacterStrip(QWidget):
             button.deleteLater()
         self.buttons = []
         colors = character_colors(characters)
+        self._colors = [colors[c.name.casefold()] for c in characters]
         for character in characters:
             button = QToolButton()
             button.setText(button_label(character.name))
             button.setToolTip(character.tooltip())
             button.setAutoRaise(True)
-            button.setStyleSheet(
-                button_style(colors[character.name.casefold()])
-            )
             DragStarter(
                 button,
                 lambda name=character.name: character_mime_data(name),
@@ -233,6 +240,7 @@ class CharacterStrip(QWidget):
                 )
             )
             self.buttons.append(button)
+        self._style_buttons()
         if not characters:
             empty = QToolButton()
             empty.setText("No characters")
@@ -245,6 +253,18 @@ class CharacterStrip(QWidget):
         for index, button in enumerate(self.buttons):
             self._buttons_layout.insertWidget(index, button)
             button.show()
+        self._resize_to_buttons()
+        self.scroll_area.horizontalScrollBar().setValue(0)
+
+    def set_colored(self, colored: bool) -> None:
+        """Show the character buttons in their tag colours, or plain (which
+        sizes them differently)."""
+        self._colored = colored
+        self._style_buttons()
+        self._resize_to_buttons()
+
+    def _resize_to_buttons(self) -> None:
+        """Size the strip to its buttons after they change."""
         self.scroll_area.setFixedHeight(
             max(button.sizeHint().height() for button in self.buttons)
         )
@@ -255,12 +275,17 @@ class CharacterStrip(QWidget):
         )
         self.updateGeometry()
         self._fit()
-        self.scroll_area.horizontalScrollBar().setValue(0)
         # Fit again once the toolbar has given the strip its new width,
         # which may not change it (so no resize event) when it was already
         # as wide as the toolbar allows. With self as the context, the timer
         # is dropped if the strip is deleted first.
         QTimer.singleShot(0, self, self._fit)
+
+    def _style_buttons(self) -> None:
+        for button, color in zip(self.buttons, self._colors, strict=False):
+            button.setStyleSheet(
+                button_style(color if self._colored else None)
+            )
 
     def _content_width(self) -> int:
         return self._buttons_layout.minimumSize().width()
@@ -325,12 +350,18 @@ class TagToolbar(QToolBar):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__("Tags", parent)
         self.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        # As the strip spaces its buttons; some styles (Breeze) leave none
+        # between toolbar items. (Not a style sheet, which would drop the
+        # style's margins around the toolbar.)
+        self.layout().setSpacing(BUTTON_SPACING)
         self.strip = CharacterStrip()
         self.strip.character_clicked.connect(self.character_clicked)
         self.addWidget(self.strip)
         self.addSeparator()
         # Tag kind -> its button, to colour.
         self.tag_buttons: dict[str, QAbstractButton] = {}
+        self._tag_colors: dict[str, str] = {}  # tag kind -> colour
+        self._colored = True
         self._tag_action(
             "pause",
             "Pause…",
@@ -352,6 +383,12 @@ class TagToolbar(QToolBar):
             self.pronunciation_clicked,
         )
 
+    def changeEvent(self, event: QEvent) -> None:
+        super().changeEvent(event)
+        # A new style resets the spacing to its own.
+        if event.type() == QEvent.Type.StyleChange:
+            self.layout().setSpacing(BUTTON_SPACING)
+
     def _tag_action(self, kind: str, text: str, tooltip: str, signal) -> None:
         action = QAction(text, self)
         action.setToolTip(tooltip)
@@ -368,8 +405,22 @@ class TagToolbar(QToolBar):
     def set_tag_colors(self, settings: AppSettings) -> None:
         """Colour the pause, rate and pronunciation buttons as settings
         colours their tags."""
+        self._tag_colors = {
+            kind: getattr(settings, f"{kind}_color")
+            for kind in self.tag_buttons
+        }
+        self._style_tag_buttons()
+
+    def set_colored(self, colored: bool) -> None:
+        """Show every button in its tag's colour, or plain (as the text is
+        when tags aren't highlighted)."""
+        self._colored = colored
+        self.strip.set_colored(colored)
+        self._style_tag_buttons()
+
+    def _style_tag_buttons(self) -> None:
         for kind, button in self.tag_buttons.items():
-            color = getattr(settings, f"{kind}_color")
+            color = self._tag_colors.get(kind) if self._colored else None
             button.setStyleSheet(button_style(color))
 
 
