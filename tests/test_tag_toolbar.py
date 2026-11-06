@@ -3,14 +3,22 @@
 from __future__ import annotations
 
 import pytest
-from PySide6.QtCore import QPoint, QPointF, Qt
-from PySide6.QtGui import QDrag, QDragEnterEvent, QDragMoveEvent, QDropEvent
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+from PySide6.QtGui import (
+    QDrag,
+    QDragEnterEvent,
+    QDragMoveEvent,
+    QDropEvent,
+    QGuiApplication,
+    QHelpEvent,
+)
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QInputDialog,
     QMessageBox,
+    QToolTip,
 )
 
 from kokoro_editor.characters import CHARACTER_MIME_TYPE, Character
@@ -35,7 +43,11 @@ from kokoro_editor.tags import (
     rate_tag,
     tag_problems,
 )
-from kokoro_editor.widgets import NEW_TAG_MIME_TYPE
+from kokoro_editor.widgets import (
+    NEW_TAG_MIME_TYPE,
+    ShiftTooltips,
+    rich_tooltip,
+)
 
 
 def names(window) -> list[str]:
@@ -177,8 +189,8 @@ def test_strip_is_only_as_wide_as_a_short_cast(window):
 def answer_number(monkeypatch, value, ok=True):
     asked = []
 
-    def get_double(parent, title, label, current, low, high, decimals):
-        asked.append((title, current, low, high))
+    def get_double(parent, title, label, current, low, high, decimals, **kw):
+        asked.append((title, current, low, high, kw.get("step", 1)))
         return value, ok
 
     monkeypatch.setattr(QInputDialog, "getDouble", staticmethod(get_double))
@@ -190,13 +202,14 @@ def test_pause_and_rate_ask_then_insert(window, monkeypatch):
     asked = answer_number(monkeypatch, 1.5)
     button(window, "Pause…").trigger()
     assert edit.toPlainText() == "[pause:1.5s] "
-    assert asked[0] == ("Insert Pause", 1.0, 0.05, 60.0)
+    assert asked[0] == ("Insert Pause", 1.0, 0.05, 60.0, 1)
     button(window, "Pause…").trigger()
     assert asked[1][1] == 1.5  # remembers the last length
-    answer_number(monkeypatch, 0.9)
     edit.setPlainText("")
+    asked = answer_number(monkeypatch, 0.9)
     button(window, "Rate…").trigger()
     assert edit.toPlainText() == "[rate:0.9] "
+    assert asked[0][-1] == 0.05  # the arrows step finely
 
 
 def test_cancelling_inserts_nothing(window, monkeypatch):
@@ -481,3 +494,70 @@ def test_strip_fits_after_toggling_colours(window):
         window.highlight_action.trigger()  # on
         assert settle() == colored
     assert plain != colored
+
+
+@pytest.fixture
+def shift_tooltips(qapp, monkeypatch):
+    """ShiftTooltips installed, as the app does, and a Shift key that
+    shift(True/False) holds down or lets go."""
+    tooltips = ShiftTooltips(qapp)
+    held = [False]
+    no, yes = Qt.KeyboardModifier.NoModifier, Qt.KeyboardModifier.ShiftModifier
+    monkeypatch.setattr(
+        QGuiApplication,
+        "queryKeyboardModifiers",
+        staticmethod(lambda: yes if held[0] else no),
+    )
+
+    def shift(down: bool, widget=None) -> None:
+        held[0] = down
+        if widget is not None:
+            send = QTest.keyPress if down else QTest.keyRelease
+            send(widget, Qt.Key.Key_Shift)
+
+    yield shift
+    qapp.removeEventFilter(tooltips)
+    tooltips.setParent(None)
+    QToolTip.hideText()
+
+
+def hover(widget, pos: QPoint) -> str:
+    event = QHelpEvent(QEvent.Type.ToolTip, pos, widget.mapToGlobal(pos))
+    QApplication.sendEvent(widget, event)
+    return QToolTip.text()
+
+
+def test_shift_shows_a_characters_description(window, shift_tooltips):
+    window.show()
+    bob = Character("bob", "am_puck", description="Gruff.\n\nA sailor.")
+    window.panel.set_characters([bob, Character("eve")])
+    button = character_button(window, "bob")
+    assert hover(button, QPoint(5, 5)) == bob.tooltip()
+    shift_tooltips(True, window)  # pressed while it shows
+    assert QToolTip.text() == rich_tooltip(bob.whats_this())
+    assert "<p>Gruff.</p><p>A sailor.</p>" in QToolTip.text()
+    shift_tooltips(False, window)
+    assert QToolTip.text() == bob.tooltip()
+    # Already held when hovering: in the panel's table too.
+    table = window.panel.table
+    window.panel.set_collapsed(False)
+    QApplication.instance().processEvents()
+    centre = table.visualItemRect(table.item(0, 1)).center()
+    assert hover(table.viewport(), centre) == bob.tooltip()
+    shift_tooltips(True)
+    assert hover(table.viewport(), centre) == rich_tooltip(bob.whats_this())
+    # Nothing more to show for a character without one.
+    eve = character_button(window, "eve")
+    assert hover(eve, QPoint(5, 5)) == Character("eve").tooltip()
+
+
+def test_shift_shows_a_description_over_a_tag(window, shift_tooltips):
+    window.panel.set_characters([Character("bob", description="Gruff.")])
+    text = "[voice:bob] Hi"
+    assert window._tag_tooltip(text, 3).startswith(
+        "bob\nVoice: (none)\nRate: 1.00×\nHold Shift for the description."
+    )
+    shift_tooltips(True)
+    tip = window._tag_tooltip(text, 3)
+    assert tip.startswith("<p>bob<br>")
+    assert "<p>Gruff.</p><p>Double-click to change it" in tip

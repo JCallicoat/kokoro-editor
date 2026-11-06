@@ -39,6 +39,16 @@ def test_tooltip():
     assert Character("bob", "", 1.25).tooltip() == (
         "bob\nVoice: (none)\nRate: 1.25×"
     )
+    assert Character("bob").whats_this() == ""  # nothing more to show
+    bob = Character("bob", "am_puck", description="Gruff.\nA sailor.")
+    assert bob.tooltip() == (
+        "bob\nVoice: am_puck\nRate: 1.00×\nHold Shift for the description."
+    )
+    assert (
+        bob.whats_this()
+        == bob.tooltip(detailed=True)
+        == ("bob\nVoice: am_puck\nRate: 1.00×\n\nGruff.\nA sailor.")
+    )
 
 
 def test_clamp_rate():
@@ -103,6 +113,19 @@ def test_cast_file_round_trip_keeps_voiceless_characters():
     assert loaded == [
         Character(c.name, c.voice, c.rate, colors[c.name]) for c in cast
     ]
+    assert "descriptions" not in data[CAST_FILE_KEY]  # none to keep
+
+
+def test_cast_file_keeps_descriptions_beside_voice_aliases():
+    cast = [Character("bob", "am_puck", description="Gruff."), Character("x")]
+    data = cast_to_json(cast)
+    assert data["voice_aliases"] == {"bob": "am_puck", "x": ""}
+    assert data[CAST_FILE_KEY]["descriptions"] == {"bob": "Gruff."}
+    loaded, _ = characters_from_json(json.loads(json.dumps(data)))
+    assert [c.description for c in loaded] == ["Gruff.", ""]
+    data[CAST_FILE_KEY]["descriptions"] = {"bob": 3, "x": "  Quiet.  "}
+    loaded, _ = characters_from_json(data)  # a bad one is ignored
+    assert [c.description for c in loaded] == ["", "Quiet."]
 
 
 def test_cast_file_may_be_a_bare_alias_object():

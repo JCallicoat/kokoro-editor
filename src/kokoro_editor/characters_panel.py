@@ -11,7 +11,6 @@ from PySide6.QtCore import (
     QEvent,
     QMimeData,
     QModelIndex,
-    QObject,
     QPersistentModelIndex,
     QRect,
     QSize,
@@ -21,8 +20,6 @@ from PySide6.QtCore import (
 from PySide6.QtGui import (
     QAction,
     QColor,
-    QCursor,
-    QGuiApplication,
     QKeySequence,
     QPainter,
 )
@@ -31,7 +28,6 @@ from PySide6.QtNetwork import (
     QNetworkReply,
 )
 from PySide6.QtWidgets import (
-    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -46,6 +42,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QStyle,
     QStyledItemDelegate,
@@ -83,7 +80,7 @@ from kokoro_editor.settings import (
     voices_request,
 )
 from kokoro_editor.voice_mix import VoiceMixWidget
-from kokoro_editor.widgets import ColorButton
+from kokoro_editor.widgets import ColorButton, shift_held
 
 # Space between the voice column's text and its cell edges.
 VOICE_PADDING = 4
@@ -233,42 +230,19 @@ class _RateSpinBox(QDoubleSpinBox):
             "tags in the text scale it further."
         )
 
-    def _show_tooltip(self) -> None:
-        detailed = bool(
-            QGuiApplication.queryKeyboardModifiers()
-            & Qt.KeyboardModifier.ShiftModifier
-        )
-        QToolTip.showText(QCursor.pos(), self._tooltip(detailed), self)
-
+    # ShiftTooltips asks again when Shift is pressed or released.
     def event(self, event: QEvent) -> bool:
         if event.type() == QEvent.Type.ToolTip:
-            self._show_tooltip()
+            QToolTip.showText(
+                event.globalPos(), self._tooltip(shift_held()), self
+            )
             return True
         return super().event(event)
-
-    # Shift is watched application-wide while hovering, since key events
-    # only reach the box when it has focus.
-    def enterEvent(self, event) -> None:
-        QApplication.instance().installEventFilter(self)
-        super().enterEvent(event)
-
-    def leaveEvent(self, event) -> None:
-        QApplication.instance().removeEventFilter(self)
-        super().leaveEvent(event)
-
-    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        if (
-            event.type() in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease)
-            and event.key() == Qt.Key.Key_Shift
-            and QToolTip.isVisible()
-        ):
-            self._show_tooltip()
-        return False
 
 
 class CharacterDialog(QDialog):
     """Add or edit a character: a name, the voice mix it speaks with, its
-    rate, and the colour of its tags.
+    rate, the colour of its tags, and an optional description.
 
     A new character gets a colour unlike other_colors. One still on its
     default colour (default_color) keeps it as a default unless changed.
@@ -322,9 +296,22 @@ class CharacterDialog(QDialog):
         color_row.addWidget(self.color_button)
         color_row.addWidget(another)
         color_row.addStretch(1)
+        # A paragraph or so, so a text box rather than a line.
+        self.description_edit = QPlainTextEdit(character.description)
+        self.description_edit.setPlaceholderText(
+            "Optional: who they are, how they should sound…"
+        )
+        self.description_edit.setToolTip(
+            "Notes for yourself, shown in the character's tooltips while "
+            "Shift is held"
+        )
+        self.description_edit.setTabChangesFocus(True)
+        lines = self.description_edit.fontMetrics().lineSpacing()
+        self.description_edit.setFixedHeight(lines * 4 + 12)
         rate_form = QFormLayout()
         rate_form.addRow("Rate:", self.rate_spin)
         rate_form.addRow("Colour:", color_row)
+        rate_form.addRow("Description:", self.description_edit)
 
         # Voices are optional so characters can be jotted down quickly and
         # given voices later. The mix preview plays at the character's rate.
@@ -361,6 +348,7 @@ class CharacterDialog(QDialog):
             # The spin box holds 2 decimals; round off float noise.
             round(self.rate_spin.value(), 2),
             self.color_button.color() if self._own_color else "",
+            self.description_edit.toPlainText().strip(),
         )
 
     def accept(self) -> None:
@@ -463,6 +451,7 @@ class CharacterPickerDialog(QDialog):
         for character in characters:
             item = QListWidgetItem(character.name)
             item.setToolTip(character.tooltip())
+            item.setWhatsThis(character.whats_this())
             self.character_list.addItem(item)
         names = [c.name for c in characters]
         last = self._last_picks.get(key)
@@ -724,6 +713,7 @@ class PanelWidget(QWidget):
                 )
                 # Either cell shows the whole character, rate included.
                 item.setToolTip(character.tooltip())
+                item.setWhatsThis(character.whats_this())
                 if column == 0:  # a swatch of its tag colour
                     item.setData(
                         Qt.ItemDataRole.DecorationRole,

@@ -283,6 +283,7 @@ class InsertCharactersDialog(QDialog):
         for character in self._casts.get(self.source_box.currentText(), []):
             item = QListWidgetItem(character.name)
             item.setToolTip(character.tooltip())
+            item.setWhatsThis(character.whats_this())
             self.character_list.addItem(item)
         self._update_insert_button()
 

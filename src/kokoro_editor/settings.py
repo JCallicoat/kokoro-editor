@@ -242,6 +242,7 @@ def load_casts() -> dict[str, list[Character]]:
                 str(c.get("voice", "")),
                 _load_rate(c),
                 c["color"].lower() if is_color(c.get("color")) else "",
+                str(c.get("description", "")),
             )
             for c in cast.get("characters", [])
             if isinstance(c, dict) and c.get("name")
@@ -265,6 +266,8 @@ def save_casts(casts: dict[str, list[Character]]) -> None:
             saved["rate"] = c.rate
         if c.color:
             saved["color"] = c.color
+        if c.description:
+            saved["description"] = c.description
         return saved
 
     data = [

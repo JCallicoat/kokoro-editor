@@ -256,16 +256,19 @@ def test_double_click_imports_from_another_cast(editor, boxes, monkeypatch):
 def test_double_click_changes_pauses_and_rates(
     editor, monkeypatch, text, position, answer, expected
 ):
-    asked = []
+    asked, steps = [], []
 
-    def get_double(parent, title, label, current, *args):
+    def get_double(parent, title, label, current, *args, step=1):
         asked.append(current)
+        steps.append(step)
         return answer, True
 
     monkeypatch.setattr(QInputDialog, "getDouble", staticmethod(get_double))
     editor.text_edit.setPlainText(text)
     double_click(editor, position)
     assert asked == [float(find_tags(text)[0].value)]  # filled in
+    # Rates step finely; pauses by whole seconds.
+    assert steps == [1 if "pause" in text else 0.05]
     assert editor.text_edit.toPlainText() == expected
 
 

@@ -2,19 +2,33 @@
 
 from __future__ import annotations
 
+import html
+import re
 from collections.abc import Callable
 
-from PySide6.QtCore import QByteArray, QEvent, QMimeData, QPoint, Qt, Signal
+import shiboken6
+from PySide6.QtCore import (
+    QByteArray,
+    QEvent,
+    QMimeData,
+    QObject,
+    QPoint,
+    Qt,
+    Signal,
+)
 from PySide6.QtGui import (
     QColor,
     QDrag,
     QDragLeaveEvent,
     QDropEvent,
+    QGuiApplication,
+    QHelpEvent,
     QMouseEvent,
     QTextBlock,
     QTextCursor,
 )
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QColorDialog,
     QPlainTextEdit,
@@ -29,6 +43,83 @@ from PySide6.QtWidgets import (
 from kokoro_editor.characters import CHARACTER_MIME_TYPE
 from kokoro_editor.colors import text_color
 from kokoro_editor.tags import string_index, tag_at, utf16_index
+
+
+def shift_held() -> bool:
+    """Whether Shift is down now (not as of the last input event)."""
+    return bool(
+        QGuiApplication.queryKeyboardModifiers()
+        & Qt.KeyboardModifier.ShiftModifier
+    )
+
+
+def rich_tooltip(text: str) -> str:
+    """Plain text as a tooltip that wraps, as a long description needs: Qt
+    only wraps rich text. Blank lines separate paragraphs."""
+    paragraphs = re.split(r"\n\s*\n", text.strip())
+    return "".join(
+        "<p>" + html.escape(p).replace("\n", "<br>") + "</p>"
+        for p in paragraphs
+    )
+
+
+class ShiftTooltips(QObject):
+    """Application-wide detailed tooltips: while Shift is held, a widget's
+    What's This text (or an item view item's) shows instead of its tooltip.
+
+    Widgets that make their own tooltips, handling QEvent.ToolTip, check
+    shift_held() themselves. Either way the tooltip showing is asked for
+    again whenever Shift is pressed or released.
+    """
+
+    def __init__(self, app: QApplication) -> None:
+        super().__init__(app)
+        # The last tooltip asked for: widget, local and global position.
+        self._last: tuple[QWidget, QPoint, QPoint] | None = None
+        self._last_key_event = None
+        app.installEventFilter(self)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        kind = event.type()
+        if kind == QEvent.Type.ToolTip and isinstance(watched, QWidget):
+            self._last = (watched, event.pos(), event.globalPos())
+            text = self._whats_this(watched, event.pos())
+            if text and shift_held():
+                QToolTip.showText(
+                    event.globalPos(), rich_tooltip(text), watched
+                )
+                return True
+        elif (
+            kind in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease)
+            and event.key() == Qt.Key.Key_Shift
+            and not event.isAutoRepeat()
+            # A key event reaches the filter again for each parent it's
+            # passed on to.
+            and event is not self._last_key_event
+        ):
+            self._last_key_event = event
+            self._ask_again()
+        return False
+
+    def _ask_again(self) -> None:
+        if self._last is None or not QToolTip.isVisible():
+            return
+        widget, pos, global_pos = self._last
+        if shiboken6.isValid(widget):
+            QApplication.sendEvent(
+                widget, QHelpEvent(QEvent.Type.ToolTip, pos, global_pos)
+            )
+
+    @staticmethod
+    def _whats_this(widget: QWidget, pos: QPoint) -> str:
+        view = widget.parent()
+        if isinstance(view, QAbstractItemView) and widget is view.viewport():
+            index = view.indexAt(pos)
+            if not index.isValid():
+                return ""
+            return index.data(Qt.ItemDataRole.WhatsThisRole) or ""
+        return widget.whatsThis()
+
 
 # Drag and drop format for a tag moved within (or copied from) the editor.
 TAG_MIME_TYPE = "application/x-kokoro-editor-tag"

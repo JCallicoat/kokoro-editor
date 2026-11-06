@@ -227,6 +227,7 @@ class CharacterStrip(QWidget):
             button = QToolButton()
             button.setText(button_label(character.name))
             button.setToolTip(character.tooltip())
+            button.setWhatsThis(character.whats_this())
             button.setAutoRaise(True)
             DragStarter(
                 button,

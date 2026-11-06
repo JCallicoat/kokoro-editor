@@ -19,7 +19,8 @@ VOICE_TAG_PATTERN = re.compile(
 )
 
 
-# Cast files keep what only this app uses (colours) under this key.
+# Cast files keep what only this app uses (colours, descriptions) under
+# this key.
 CAST_FILE_KEY = "kokoro_editor"
 
 # Drag and drop format carrying a character's name, so the editor can
@@ -41,6 +42,8 @@ class Character:
     # Its tags' background in the editor, "#rrggbb"; "" for a default
     # (see character_colors).
     color: str = ""
+    # Free text about the character, for the user; never sent to the server.
+    description: str = ""
 
     def alias_value(self) -> str | dict:
         """The character's voice_aliases entry: the plain mix, or the mix
@@ -49,12 +52,24 @@ class Character:
             return self.voice
         return {"voice": self.voice, "rate": self.rate}
 
-    def tooltip(self) -> str:
-        return (
+    def tooltip(self, detailed: bool = False) -> str:
+        """Its name, voice and rate; with a description, a hint to hold
+        Shift for it, or (detailed) the description itself."""
+        text = (
             f"{self.name}\n"
             f"Voice: {self.voice or '(none)'}\n"
             f"Rate: {self.rate:.2f}×"
         )
+        if not self.description:
+            return text
+        if detailed:
+            return f"{text}\n\n{self.description}"
+        return f"{text}\nHold Shift for the description."
+
+    def whats_this(self) -> str:
+        """Its detailed tooltip, shown while Shift is held (see
+        ShiftTooltips), or "" when there's nothing more to show."""
+        return self.tooltip(detailed=True) if self.description else ""
 
 
 def clamp_rate(rate: float) -> float:
@@ -123,14 +138,19 @@ def cast_name_error(name: str, other_names: list[str]) -> str | None:
 def cast_to_json(characters: list[Character]) -> dict:
     """A cast file's contents. Unlike requests, characters without a voice
     are kept (with an empty mix) so they survive a round trip; the web UI
-    skips them. Colours go under a key of their own, which the web UI
-    ignores, so voice_aliases stays exactly in its format."""
+    skips them. Colours and descriptions go under a key of their own,
+    which the web UI ignores, so voice_aliases stays exactly in its
+    format."""
     colors = character_colors(characters)
+    extra: dict = {
+        "colors": {c.name: colors[c.name.casefold()] for c in characters}
+    }
+    descriptions = {c.name: c.description for c in characters if c.description}
+    if descriptions:
+        extra["descriptions"] = descriptions
     return {
         "voice_aliases": {c.name: c.alias_value() for c in characters},
-        CAST_FILE_KEY: {
-            "colors": {c.name: colors[c.name.casefold()] for c in characters}
-        },
+        CAST_FILE_KEY: extra,
     }
 
 
@@ -172,6 +192,12 @@ def characters_from_json(data) -> tuple[list[Character], list[str]]:
                 color = colors.get(character.name)
                 if is_color(color):
                     character.color = color.lower()
+        descriptions = data[CAST_FILE_KEY].get("descriptions")
+        if isinstance(descriptions, dict):
+            for character in characters:
+                description = descriptions.get(character.name)
+                if isinstance(description, str):
+                    character.description = description.strip()
     return characters, skipped
 
 

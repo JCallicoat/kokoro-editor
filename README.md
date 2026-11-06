@@ -73,12 +73,16 @@ character has:
   at the current speed;
 - a **colour** for its tags in the text. New characters get one unlike the
   others' (↻ suggests another), chosen to stand out on light and dark
-  editors; tag text is black or white, whichever reads better.
+  editors; tag text is black or white, whichever reads better;
+- an optional **description**, a few lines of notes for yourself (never sent
+  to the server).
 
 Use **Add** to create one, double-click a row or press Enter to edit it, and
 **Remove** (or Delete) to delete it (you're warned if the document still uses it). Reorder
 characters with the arrow buttons or by dragging rows within the table. Hover
-over a row to see the character's full voice mix and rate.
+over a row to see the character's full voice mix and rate; hold Shift to
+see its description too. The same goes for its toolbar button and its tags
+in the text.
 
 Characters are sent to the server as `voice_aliases`, so in the text a
 character is just a voice tag with its name:
@@ -165,7 +169,8 @@ just that character, and you can apply your choice to all remaining conflicts.
 Cast files are JSON in the `{"voice_aliases": {...}}` format that
 Kokoro-FastAPI's web UI imports and exports, so casts can move between the
 two. (The web UI skips characters that don't have a voice yet.) Character
-colours are kept alongside, under a `kokoro_editor` key the web UI ignores.
+colours and descriptions are kept alongside, under a `kokoro_editor` key the
+web UI ignores.
 
 ### Checking tags
 

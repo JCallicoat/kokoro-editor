@@ -87,12 +87,18 @@ from kokoro_editor.tags import (
     tag_at,
     tag_problems,
 )
-from kokoro_editor.widgets import EditorTextEdit, SeekSlider
+from kokoro_editor.widgets import (
+    EditorTextEdit,
+    SeekSlider,
+    rich_tooltip,
+    shift_held,
+)
 
 APP_NAME = "Kokoro Editor"
 UNTITLED = "Untitled"
 FILE_FILTER = "Text files (*.txt);;All files (*)"
 MAX_LISTED_PROBLEMS = 15
+RATE_STEP = 0.05  # the rate dialogs' arrows, as the character rate box
 
 
 class MainWindow(QMainWindow):
@@ -903,6 +909,8 @@ class MainWindow(QMainWindow):
         if tag.kind == "voice":
             character = self._character_named(tag.value)
             if character is not None:
+                if character.description and shift_held():
+                    return rich_tooltip(character.tooltip(True) + hint)
                 return character.tooltip() + hint
             if is_voice_mix(tag.value, self.panel.voices()):
                 return f"Kokoro voice mix: {tag.value}" + hint
@@ -967,6 +975,7 @@ class MainWindow(QMainWindow):
                 MIN_RATE,
                 MAX_RATE,
                 2,
+                step=RATE_STEP,
             )
             if ok:
                 replacement = f"[{tag.kind}:{rate:g}]"
@@ -1020,6 +1029,7 @@ class MainWindow(QMainWindow):
             MIN_RATE,
             MAX_RATE,
             2,
+            step=RATE_STEP,
         )
         if ok:
             self._last_rate = rate

@@ -138,6 +138,13 @@ def test_casts_keep_their_order_and_rates(saga):
     assert stored[0]["characters"][0]["rate"] == 0.8
 
 
+def test_casts_keep_descriptions():
+    save_cast("Tale", [Character("bob", description="Gruff."), Character("x")])
+    assert [c.description for c in load_casts()["Tale"]] == ["Gruff.", ""]
+    stored = json.loads(QSettings().value("casts"))
+    assert "description" not in stored[0]["characters"][1]  # left out
+
+
 def test_casts_load_old_and_damaged_data():
     QSettings().setValue(
         "casts",

@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QApplication
 from kokoro_editor import __version__
 from kokoro_editor.main_window import MainWindow
 from kokoro_editor.settings import load_last_cast, load_recent_files
+from kokoro_editor.widgets import ShiftTooltips
 
 
 def main() -> int:
@@ -19,6 +20,7 @@ def main() -> int:
     # No setApplicationDisplayName(): Qt would append it to the window title,
     # which already starts with the app name.
     app = QApplication(sys.argv)
+    ShiftTooltips(app)
     window = MainWindow()
     window.show()
     args = app.arguments()[1:]

@@ -129,6 +129,21 @@ def test_rate_tooltip_gives_detail_with_shift(qapp):
     assert "about 0.88×" in dialog.rate_spin._tooltip(True)
 
 
+def test_character_dialog_edits_the_description(qapp):
+    dialog = CharacterDialog(
+        [],
+        AppSettings,
+        None,
+        lambda _a: None,
+        Character("bob", description="Gruff."),
+        [],
+        editing=True,
+    )
+    assert dialog.description_edit.toPlainText() == "Gruff."
+    dialog.description_edit.setPlainText("  A sailor.\n\nOld.  \n")
+    assert dialog.character().description == "A sailor.\n\nOld."
+
+
 def test_remove(panel, boxes):
     panel.set_characters([Character("bob"), Character("eve")])
     panel.set_tag_counter(lambda name: 2 if name == "bob" else 0)
