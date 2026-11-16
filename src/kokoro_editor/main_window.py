@@ -352,7 +352,8 @@ class MainWindow(QMainWindow):
         self.highlight_action.setChecked(self._highlighting)
         view_menu.addAction(self.highlight_action)
 
-        playback_menu = bar.addMenu("&Playback")
+        # "&&" is a literal ampersand; the single "&" marks the P mnemonic.
+        playback_menu = bar.addMenu("&Play && Render")
         self.play_action = self._action(
             "&Play", self._on_play_clicked, "Ctrl+Space"
         )
@@ -368,6 +369,10 @@ class MainWindow(QMainWindow):
         playback_menu.addActions([self.play_action, self.stop_action])
         playback_menu.addSeparator()
         playback_menu.addActions([self.back_action, self.forward_action])
+        playback_menu.addSeparator()
+        playback_menu.addAction(
+            self._action("&Render…", self._on_render_clicked, "Ctrl+R")
+        )
 
     # -- documents ---------------------------------------------------------- #
     def _update_title(self) -> None:

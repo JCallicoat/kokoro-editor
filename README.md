@@ -233,6 +233,7 @@ sessions.
 | Play / Pause                     | Ctrl+Space        |
 | Stop                             | Ctrl+.            |
 | Scrub back / ahead               | Alt+Left / Right  |
+| Render to an audio file          | Ctrl+R            |
 | Insert character 1–9's tag       | Alt+1 … Alt+9     |
 | Pick a character to insert       | Alt+0             |
 | Show / hide the characters panel | Alt+-             |
