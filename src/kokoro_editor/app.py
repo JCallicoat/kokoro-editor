@@ -5,21 +5,29 @@ from __future__ import annotations
 import sys
 
 from PySide6.QtCore import QCoreApplication
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
-from kokoro_editor import __version__
+from kokoro_editor import __version__, desktop
 from kokoro_editor.main_window import MainWindow
 from kokoro_editor.settings import load_last_cast, load_recent_files
 from kokoro_editor.widgets import ShiftTooltips
 
 
 def main() -> int:
+    if sys.argv[1:] == ["--install-desktop"]:
+        return desktop.install()
+    if sys.argv[1:] == ["--uninstall-desktop"]:
+        return desktop.uninstall()
     QCoreApplication.setOrganizationName("KokoroEditor")
     QCoreApplication.setApplicationName("KokoroEditor")
     QCoreApplication.setApplicationVersion(__version__)
     # No setApplicationDisplayName(): Qt would append it to the window title,
     # which already starts with the app name.
     app = QApplication(sys.argv)
+    # Lets the desktop match the windows to the installed desktop entry.
+    app.setDesktopFileName(desktop.APP_ID)
+    app.setWindowIcon(QIcon(str(desktop.icon_path())))
     ShiftTooltips(app)
     window = MainWindow()
     window.show()

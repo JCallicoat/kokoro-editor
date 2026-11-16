@@ -20,6 +20,35 @@ pipx install .
 Then run `kokoro-editor` (optionally with a file to open: `kokoro-editor notes.txt`).
 You can also run it without installing via `python -m kokoro_editor`.
 
+To add Kokoro Editor to your desktop's application menu (and its **Open
+With** list for text files), run:
+
+```sh
+kokoro-editor --install-desktop
+```
+
+This writes a desktop entry and the icon under `~/.local/share` (or
+`$XDG_DATA_HOME`), pointing at the `kokoro-editor` command you ran it with.
+`kokoro-editor --uninstall-desktop` removes them again.
+
+#### Using your desktop's Qt theme
+
+The PySide6 wheel from PyPI bundles its own Qt, which can't load your
+desktop's Qt theme plugins, so on KDE Plasma, for example, the app won't fully
+match your theme. To use your system's Qt instead, install PySide6 from your
+package manager (`pyside6` on Arch) and let the app's environment see it:
+
+```sh
+pipx install --backend pip --system-site-packages .
+```
+
+`--backend pip` matters: when `uv` is installed, pipx uses it by default, and
+uv installs PySide6 from PyPI even if the system already has it. Older pipx
+versions without `--backend` always use pip, so leave the option off there.
+This works when your distribution's PySide6 package registers itself with pip
+under the name `PySide6`, as Arch's does. If yours doesn't, pip installs the
+PyPI wheel as usual.
+
 `sounddevice` needs the PortAudio library. It is bundled with the Windows and
 macOS wheels; on Linux install it from your package manager (`portaudio` on
 Arch, `libportaudio2` on Debian/Ubuntu).
