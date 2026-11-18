@@ -112,9 +112,12 @@ class SettingsDialog(QDialog):
         self.restore_check = QCheckBox("Restore previous session on startup")
         self.restore_check.setChecked(settings.restore_session)
 
+        self.search_color_button = ColorButton(settings.search_color)
+
         editor_group = QGroupBox("Editor")
-        editor_layout = QVBoxLayout(editor_group)
-        editor_layout.addWidget(self.restore_check)
+        editor_layout = QFormLayout(editor_group)
+        editor_layout.addRow(self.restore_check)
+        editor_layout.addRow("Search highlight", self.search_color_button)
 
         # Characters have their own colours, set with each character.
         self.tag_color_buttons = {
@@ -298,6 +301,7 @@ class SettingsDialog(QDialog):
             prebuffer_ms=self.prebuffer_spin.value(),
             scrub_step_s=self.scrub_spin.value(),
             restore_session=self.restore_check.isChecked(),
+            search_color=self.search_color_button.color(),
             **{
                 key: button.color()
                 for key, button in self.tag_color_buttons.items()

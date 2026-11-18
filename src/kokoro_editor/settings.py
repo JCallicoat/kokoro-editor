@@ -15,6 +15,7 @@ from kokoro_editor.colors import (
     DEFAULT_PAUSE_COLOR,
     DEFAULT_PRONUNCIATION_COLOR,
     DEFAULT_RATE_COLOR,
+    DEFAULT_SEARCH_COLOR,
     DEFAULT_VOICE_MIX_COLOR,
     is_color,
 )
@@ -91,6 +92,8 @@ class AppSettings:
     rate_color: str = DEFAULT_RATE_COLOR
     pronunciation_color: str = DEFAULT_PRONUNCIATION_COLOR
     voice_mix_color: str = DEFAULT_VOICE_MIX_COLOR
+    # Background of search matches in the editor.
+    search_color: str = DEFAULT_SEARCH_COLOR
 
     @property
     def voice_string(self) -> str:
@@ -137,6 +140,7 @@ class AppSettings:
                 key: _load_color(s, key, getattr(d, key))
                 for key in TAG_COLOR_KEYS
             },
+            search_color=_load_color(s, "search_color", d.search_color),
         )
 
     def save(self) -> None:
@@ -157,6 +161,7 @@ class AppSettings:
         s.setValue("restore_session", self.restore_session)
         for key in TAG_COLOR_KEYS:
             s.setValue(key, getattr(self, key))
+        s.setValue("search_color", self.search_color)
         s.sync()
 
 

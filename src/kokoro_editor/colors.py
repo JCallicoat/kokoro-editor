@@ -93,3 +93,7 @@ DEFAULT_PAUSE_COLOR = color_for_hue(200, 0.2)
 DEFAULT_RATE_COLOR = color_for_hue(40, 0.35)
 DEFAULT_PRONUNCIATION_COLOR = color_for_hue(280, 0.3)
 DEFAULT_VOICE_MIX_COLOR = color_for_hue(0, 0.0)
+
+# Search matches: a bright yellow that stands out from the muted tag
+# colours (the text on it is chosen with text_color()).
+DEFAULT_SEARCH_COLOR = "#ffd54f"

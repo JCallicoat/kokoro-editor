@@ -50,6 +50,7 @@ from kokoro_editor.characters import (
     voice_tag_pattern,
 )
 from kokoro_editor.characters_panel import CharacterPickerDialog, PanelWidget
+from kokoro_editor.find_panel import FindPanel
 from kokoro_editor.highlighter import TagHighlighter
 from kokoro_editor.render_dialog import RenderDialog
 from kokoro_editor.settings import (
@@ -131,6 +132,8 @@ class MainWindow(QMainWindow):
         self.text_edit.document().modificationChanged.connect(
             self.setWindowModified
         )
+        # Floats over the editor's top-right corner; Ctrl+F shows it.
+        self.find_panel = FindPanel(self.text_edit)
 
         style = self.style()
         self._icon_play = style.standardIcon(
@@ -299,6 +302,22 @@ class MainWindow(QMainWindow):
         edit_menu.addActions([cut, copy, paste])
         edit_menu.addSeparator()
         edit_menu.addAction(select_all)
+        edit_menu.addSeparator()
+        edit_menu.addAction(
+            self._action(
+                "&Find/Replace…", self.find_panel.open_panel, "Ctrl+F"
+            )
+        )
+        edit_menu.addAction(
+            self._action("Find &Next", self.find_panel.activate, "Ctrl+G")
+        )
+        edit_menu.addAction(
+            self._action(
+                "Find Previ&ous",
+                lambda: self.find_panel.find(-1),
+                "Ctrl+Shift+G",
+            )
+        )
         edit_menu.addSeparator()
         # Alt+1…9 insert the cast's first characters. They're window actions
         # so the keys are always taken, even past the last character (which
@@ -564,6 +583,7 @@ class MainWindow(QMainWindow):
         self.text_edit.setFont(self.settings.editor_font())
         self.panel.set_settings(self.settings)
         self.tag_toolbar.set_tag_colors(self.settings)
+        self.find_panel.set_color(self.settings.search_color)
         self._refresh_highlighter()
         self._update_summary()
 

@@ -69,12 +69,27 @@ The window size, the last folder you opened or saved a file in, and your five
 most recent files are remembered between sessions. Reopen recent files from
 **File → Open Recent**.
 
+### Find and replace
+
+**Edit → Find/Replace…** (Ctrl+F) opens a panel in the editor's top-right
+corner, filled with the selected text if any. Every match is highlighted as
+you type. Matching is case-sensitive; check **Regex** to use a Python regular
+expression (start it with `(?i)` to ignore case; the replacement can use `\1`
+or `\g<name>`).
+
+With only text to find, **Search** (or Ctrl+G, or Enter) selects the next match
+from the cursor; the arrows (or Ctrl+Shift+G for back) step through them,
+wrapping around the document. With replacement text, the button becomes
+**Replace**: it selects the next match and asks whether to replace it, then
+moves on to the following one. Check **All** to replace every match at once,
+undone in one step. Escape closes the panel.
+
 ### Settings
 
 Open **File → Settings…**. Switch tabs with Alt and the tab's first letter.
 
 - **Editor**: the editor font and size, the colours of tags that aren't
-  characters, and whether to restore the previous session on startup (the last file and the last cast, each loaded on its own,
+  characters and of search matches, and whether to restore the previous session on startup (the last file and the last cast, each loaded on its own,
   so a missing file doesn't stop the cast loading).
 - **Kokoro**: the server URL and model, the default voice mix, speed, a
   server-side volume multiplier, and playback options (PCM sample rate,
@@ -263,6 +278,9 @@ sessions.
 | Stop                             | Ctrl+.            |
 | Scrub back / ahead               | Alt+Left / Right  |
 | Render to an audio file          | Ctrl+R            |
+| Find / replace                   | Ctrl+F            |
+| Find (or replace) next           | Ctrl+G            |
+| Find previous                    | Ctrl+Shift+G      |
 | Insert character 1–9's tag       | Alt+1 … Alt+9     |
 | Pick a character to insert       | Alt+0             |
 | Show / hide the characters panel | Alt+-             |
